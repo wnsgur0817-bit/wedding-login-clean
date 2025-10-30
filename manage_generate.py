@@ -116,9 +116,44 @@ def seed():
     print(f"   └ 생성된 계정 수: {USER_COUNT}")
     print(f"   └ 기기 수(T-0001): {1 + len(HALLS)*BOOTHS_PER_HALL} (관리자 1 + 부조석 15)")
 
+
+def seed_if_empty(engine):
+    """테이블이 비어있을 때만 안전하게 시드."""
+    Base.metadata.create_all(engine)  # 테이블 없으면 생성
+    with Session(engine) as s:
+        # 이미 테넌트/유저가 있으면 아무 것도 안 함
+        t_count = s.scalar(select(func.count()).select_from(Tenant))
+        u_count = s.scalar(select(func.count()).select_from(User))
+        if (t_count or u_count):
+            return False  # 이미 데이터 있음
+
+        # --- 테스트 테넌트 T-0000: (0/0), D-ADMIN + D-A1 ---
+        t0 = Tenant(code="T-0000", name="TestWeddingHall")
+        s.add(t0); s.flush()
+
+        u0 = User(tenant_id=t0.id, login_id="0", pw_hash=hash_pw("0"), role="staff")
+        s.add(u0); s.flush()
+
+        s.add(Device(tenant_id=t0.id, device_code=ADMIN_DEVICE_CODE, activation_code=_gen_activation(), active=0))
+        s.add(Device(tenant_id=t0.id, device_code="D-A1",          activation_code=_gen_activation(), active=0))
+
+        # --- 실제 테넌트 T-0001: gen001~100, D-ADMIN + A1~C5 ---
+        t1 = Tenant(code=TENANT_CODE, name=TENANT_NAME)
+        s.add(t1); s.flush()
+
+        for i in range(1, USER_COUNT + 1):
+            s.add(User(tenant_id=t1.id, login_id=f"gen{i:03d}", pw_hash=hash_pw(PASSWORD), role="staff"))
+
+        s.add(Device(tenant_id=t1.id, device_code=ADMIN_DEVICE_CODE, activation_code=_gen_activation(), active=0))
+        for h in HALLS:
+            for b in range(1, BOOTHS_PER_HALL + 1):
+                s.add(Device(tenant_id=t1.id, device_code=_gen_device_code(h, b), activation_code=_gen_activation(), active=0))
+
+        s.commit()
+        return True
+
+
+
 if __name__ == "__main__":
     seed()
-
-
-
 
