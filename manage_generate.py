@@ -2,7 +2,7 @@
 # manage_generate.py
 import csv, secrets
 from sqlalchemy.orm import Session
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select, func
 from models import Base, Tenant, User, Device
 from auth import hash_pw
 
