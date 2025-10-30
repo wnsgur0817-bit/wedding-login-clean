@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: wedding-login-api      # Render 대시보드에서 표시될 이름
+    env: python
+    plan: free                   # Render 무료 플랜 사용 가능
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+
+    envVars:
+      - key: DATABASE_URL
+        sync: false              # Render 대시보드에서 값 설정 (PostgreSQL URL)
+      - key: JWT_SECRET
+        generateValue: true      # 자동으로 랜덤 시크릿 생성
