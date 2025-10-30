@@ -2,7 +2,7 @@
 # manage_generate.py
 import csv, secrets
 from sqlalchemy.orm import Session
-from sqlalchemy import create_engine, select, func
+from sqlalchemy import create_engine, select, func   # ✅ select, func 추가!
 from models import Base, Tenant, User, Device
 from auth import hash_pw
 
@@ -134,8 +134,8 @@ def seed_if_empty(engine):
         u0 = User(tenant_id=t0.id, login_id="0", pw_hash=hash_pw("0"), role="staff")
         s.add(u0); s.flush()
 
-        s.add(Device(tenant_id=t0.id, device_code=ADMIN_DEVICE_CODE, activation_code=_gen_activation(), active=0))
-        s.add(Device(tenant_id=t0.id, device_code="D-A1",          activation_code=_gen_activation(), active=0))
+        s.add(Device(tenant_id=t0.id, device_code=ADMIN_DEVICE_CODE, activation_code=gen_activation(), active=0))
+        s.add(Device(tenant_id=t0.id, device_code="D-A1", activation_code=gen_activation(), active=0))
 
         # --- 실제 테넌트 T-0001: gen001~100, D-ADMIN + A1~C5 ---
         t1 = Tenant(code=TENANT_CODE, name=TENANT_NAME)
@@ -144,11 +144,15 @@ def seed_if_empty(engine):
         for i in range(1, USER_COUNT + 1):
             s.add(User(tenant_id=t1.id, login_id=f"gen{i:03d}", pw_hash=hash_pw(PASSWORD), role="staff"))
 
-        s.add(Device(tenant_id=t1.id, device_code=ADMIN_DEVICE_CODE, activation_code=_gen_activation(), active=0))
+        s.add(Device(tenant_id=t1.id, device_code=ADMIN_DEVICE_CODE, activation_code=gen_activation(), active=0))
         for h in HALLS:
             for b in range(1, BOOTHS_PER_HALL + 1):
-                s.add(Device(tenant_id=t1.id, device_code=_gen_device_code(h, b), activation_code=_gen_activation(), active=0))
-
+                s.add(Device(
+                    tenant_id=t1.id,
+                    device_code=gen_device_code(h, b),
+                    activation_code=gen_activation(),
+                    active=0
+                ))
         s.commit()
         return True
 
