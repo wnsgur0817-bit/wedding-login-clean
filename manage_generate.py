@@ -28,17 +28,16 @@ def gen_device_code(h, b): return f"D-{h}{b}"
 
 def seed():
     reset_db()
-    rows = []  # seed_output.csv (device 중심 표)
+    rows = []
     with Session(engine) as s:
-        # ── (옵션) 테스트 테넌트 T-0000 생성: ID=0/PW=0, D-ADMIN + D-A1 ──
         if INCLUDE_TEST_T0000:
-            t0 = Tenant(code="T-0000", name="TestWeddingHall")
+            t0 = Tenant(code="T-0000", name="TestWeddingHall", pw_hash=hash_pw("0"))  # NEW
             s.add(t0); s.flush()
 
             u0 = User(
                 tenant_id=t0.id,
                 login_id="0",
-                pw_hash=hash_pw("0"),
+                pw_hash=hash_pw("0"),  # (과거 호환용: 값은 넣어둠)
                 role="staff"
             )
             s.add(u0); s.flush()
@@ -64,16 +63,16 @@ def seed():
             rows.append(["T-0000", "0", "0", "D-A1", act_a1_0])
 
         # ── 실제 예식장 테넌트 생성 ────────────────────────────────────────
-        t1 = Tenant(code=TENANT_CODE, name=TENANT_NAME)
+
+        t1 = Tenant(code=TENANT_CODE, name=TENANT_NAME, pw_hash=hash_pw(PASSWORD))  # NEW
         s.add(t1); s.flush()
 
-        # 사용자 gen001 ~ gen100
         for i in range(1, USER_COUNT + 1):
             login_id = f"gen{i:03d}"
             s.add(User(
                 tenant_id=t1.id,
                 login_id=login_id,
-                pw_hash=hash_pw(PASSWORD),
+                pw_hash=hash_pw(PASSWORD),  # (과거 호환용)
                 role="staff"
             ))
         s.flush()
@@ -128,7 +127,7 @@ def seed_if_empty(engine):
             return False  # 이미 데이터 있음
 
         # --- 테스트 테넌트 T-0000: (0/0), D-ADMIN + D-A1 ---
-        t0 = Tenant(code="T-0000", name="TestWeddingHall")
+        t0 = Tenant(code="T-0000", name="TestWeddingHall", pw_hash=hash_pw("0"))  # ✅ pw_hash 추가
         s.add(t0); s.flush()
 
         u0 = User(tenant_id=t0.id, login_id="0", pw_hash=hash_pw("0"), role="staff")
@@ -138,7 +137,7 @@ def seed_if_empty(engine):
         s.add(Device(tenant_id=t0.id, device_code="D-A1", activation_code=gen_activation(), active=0))
 
         # --- 실제 테넌트 T-0001: gen001~100, D-ADMIN + A1~C5 ---
-        t1 = Tenant(code=TENANT_CODE, name=TENANT_NAME)
+        t1 = Tenant(code=TENANT_CODE, name=TENANT_NAME, pw_hash=hash_pw(PASSWORD))  # 이미 OK
         s.add(t1); s.flush()
 
         for i in range(1, USER_COUNT + 1):
@@ -154,6 +153,7 @@ def seed_if_empty(engine):
                     active=0
                 ))
         s.commit()
+
         return True
 
 
