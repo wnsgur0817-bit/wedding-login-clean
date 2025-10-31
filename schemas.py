@@ -1,7 +1,6 @@
 ﻿from pydantic import BaseModel
 
 class LoginReq(BaseModel):
-    tenant_code: str          # NEW
     login_id: str
     password: str
 
@@ -10,7 +9,6 @@ class LoginResp(BaseModel):
     claims: dict
 
 class ChangePwReq(BaseModel):
-    tenant_code: str          # NEW
     login_id: str
     current_password: str
     new_password: str
