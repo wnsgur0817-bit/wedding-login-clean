@@ -48,55 +48,69 @@ def require_auth(authorization: str = Header(None), s: Session = Depends(db)):
 # ─────────────────────────────────────────────
 @app.post("/auth/login", response_model=LoginResp)
 def login(body: LoginReq, s: Session = Depends(db)):
-    # 1) 테넌트 조회
-    tenant = s.scalars(select(Tenant).where(Tenant.code == body.tenant_code)).first()
-    if not tenant:
-        raise HTTPException(401, "invalid credentials")
+    try:
+        tenant = s.scalars(select(Tenant).where(Tenant.code == body.tenant_code)).first()
+        if not tenant:
+            raise HTTPException(401, "invalid credentials")
 
-    # 2) 해당 테넌트 내 사용자 조회
-    user = s.scalars(
-        select(User).where(User.tenant_id == tenant.id, User.login_id == body.login_id)
-    ).first()
-    if not user:
-        raise HTTPException(401, "invalid credentials")
+        user = s.scalars(
+            select(User).where(User.tenant_id == tenant.id, User.login_id == body.login_id)
+        ).first()
+        if not user:
+            raise HTTPException(401, "invalid credentials")
 
-    # 3) 비번 검증은 '테넌트 비번'으로
-    if not verify_pw(body.password, tenant.pw_hash):
-        raise HTTPException(401, "invalid credentials")
+        if not tenant.pw_hash:
+            # 마이그레이션 누락 등으로 테넌트 비번이 비어있을 때
+            raise HTTPException(500, "tenant password not initialized")
 
-    # 4) 토큰 발급 시 현재 token_version 포함
-    token = make_access_token(
-        sub=str(user.id),
-        tenant_code=tenant.code,
-        role=user.role,
-        token_version=tenant.token_version,   # ← 중요
-    )
-    return {"access_token": token, "claims": {"tenant_id": tenant.code, "role": user.role}}
+        if not verify_pw(body.password, tenant.pw_hash):
+            raise HTTPException(401, "invalid credentials")
+
+        # token_version이 None일 경우 대비
+        tv = tenant.token_version or 1
+
+        token = make_access_token(
+            sub=str(user.id),
+            tenant_code=tenant.code,
+            role=user.role,
+            token_version=tv,
+        )
+        return {"access_token": token, "claims": {"tenant_id": tenant.code, "role": user.role}}
+    except HTTPException:
+        raise
+    except Exception as e:
+        # 원인 파악을 위해 500으로 올리되 메시지 남김
+        raise HTTPException(500, f"login failed: {e}")
 
 # ─────────────────────────────────────────────
 @app.post("/auth/change_password")
 def change_password(body: ChangePwReq, s: Session = Depends(db)):
-    # 1) 테넌트 + 사용자 확인
-    tenant = s.scalars(select(Tenant).where(Tenant.code == body.tenant_code)).first()
-    if not tenant:
-        raise HTTPException(404, "tenant not found")
+    try:
+        tenant = s.scalars(select(Tenant).where(Tenant.code == body.tenant_code)).first()
+        if not tenant:
+            raise HTTPException(404, "tenant not found")
 
-    user = s.scalars(
-        select(User).where(User.tenant_id == tenant.id, User.login_id == body.login_id)
-    ).first()
-    if not user:
-        raise HTTPException(401, "invalid")
+        user = s.scalars(
+            select(User).where(User.tenant_id == tenant.id, User.login_id == body.login_id)
+        ).first()
+        if not user:
+            raise HTTPException(401, "invalid")
 
-    # 2) 현재 비번 검증: 테넌트 비번 기준
-    if not verify_pw(body.current_password, tenant.pw_hash):
-        raise HTTPException(401, "invalid")
+        if not tenant.pw_hash:
+            raise HTTPException(500, "tenant password not initialized")
 
-    # 3) 테넌트 비번 갱신 + token_version 증가 → 전체 자동 로그아웃
-    tenant.pw_hash = hash_pw(body.new_password)
-    tenant.token_version = (tenant.token_version or 1) + 1  # ← 핵심
-    # pw_updated_at은 onupdate=func.now()로 자동 갱신
-    s.commit()
-    return {"ok": True}
+        if not verify_pw(body.current_password, tenant.pw_hash):
+            raise HTTPException(401, "invalid")
+
+        tenant.pw_hash = hash_pw(body.new_password)
+        tenant.token_version = (tenant.token_version or 1) + 1
+        s.commit()
+        return {"ok": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"change_password failed: {e}")
+
 
 # ─────────────────────────────────────────────
 @app.post("/devices/activate")
