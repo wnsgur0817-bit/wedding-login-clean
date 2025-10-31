@@ -1,5 +1,7 @@
-﻿from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
-from sqlalchemy import String, Integer, ForeignKey, UniqueConstraint, DateTime, func
+﻿from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship,declarative_base
+from sqlalchemy import String, Integer, ForeignKey, UniqueConstraint, DateTime, func,Column
+
+Base = declarative_base()
 
 class Base(DeclarativeBase): pass
 
@@ -33,3 +35,16 @@ class Device(Base):
     active: Mapped[int] = mapped_column(Integer, default=0)               # 0/1
     last_seen_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now())
     __table_args__ = (UniqueConstraint("tenant_id","device_code", name="uq_device_per_tenant"),)
+
+class DeviceClaim(Base):
+    __tablename__ = "device_claims"
+    id = Column(Integer, primary_key=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False)
+    device_code = Column(String, nullable=False)
+    session_id = Column(String, nullable=False)   # 클라이언트가 만든 세션 ID(아무 문자열)
+    claimed_at = Column(DateTime, nullable=False, server_default=func.now())
+    expires_at = Column(DateTime, nullable=True)  # 하트비트/만료(선택)
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "device_code", name="uq_tenant_device_claim"),
+    )
