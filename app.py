@@ -46,16 +46,25 @@ def _maybe_seed():
 def require_auth(authorization: str = Header(None), s: Session = Depends(db)):
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(401, "missing bearer token")
-    token = authorization.split(" ", 1)[1]
-    claims = verify_access_token(token, s)  # sub/tenant_code/token_version 포함
 
-    tenant = s.scalars(select(Tenant).where(Tenant.code == claims["tenant_code"])).first()
-    if not tenant:
-        raise HTTPException(401, "tenant not found")
-    current_tv = tenant.token_version or 1
-    if current_tv != claims.get("token_version", 0):
-        raise HTTPException(401, "token revoked")
-    return claims
+    token = authorization.split(" ", 1)[1]
+
+    # auth.py 에서 토큰 검증 + tenant/token_version 체크까지 이미 함
+    payload = verify_access_token(token, s)  # payload 안에는 tenant_id, tv 가 들어있음
+
+    tenant_code = payload.get("tenant_id")
+    tv = payload.get("tv")
+
+    if not tenant_code or tv is None:
+        raise HTTPException(401, "invalid claims")
+
+    # 나머지 코드에서 편하게 쓰라고 키 이름을 통일해서 리턴
+    # (기존 코드와 호환되도록 alias 추가)
+    return {
+        **payload,
+        "tenant_code": tenant_code,
+        "token_version": tv,
+    }
 
 # ─────────────────────────────────────────────
 # 로그인/계정
