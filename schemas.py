@@ -1,5 +1,6 @@
 ﻿from pydantic import BaseModel
 from typing import List, Optional
+from datetime import date
 
 class LoginReq(BaseModel):
     login_id: str
@@ -30,3 +31,16 @@ class ReleaseReq(BaseModel):
     tenant_id: str
     device_code: str
     session_id: str
+
+class WeddingEventIn(BaseModel):
+    event_date: date
+    start_time: str
+    groom_name: str
+    bride_name: str
+    title: str
+    child_min_age: int | None = None
+    child_max_age: int | None = None
+
+class WeddingEventOut(WeddingEventIn):
+    id: int
+    tenant_id: int

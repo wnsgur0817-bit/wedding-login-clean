@@ -1,5 +1,6 @@
 ﻿from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship,declarative_base
 from sqlalchemy import String, Integer, ForeignKey, UniqueConstraint, DateTime, func,Column
+from datetime import datetime, date, time
 
 Base = declarative_base()
 
@@ -48,3 +49,17 @@ class DeviceClaim(Base):
     __table_args__ = (
         UniqueConstraint("tenant_id", "device_code", name="uq_tenant_device_claim"),
     )
+
+class WeddingEvent(Base):
+    __tablename__ = "wedding_events"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    event_date: Mapped[date] = mapped_column(DateTime)
+    start_time: Mapped[str] = mapped_column(String(8))  # "11:00"
+    title: Mapped[str] = mapped_column(String(100))
+    groom_name: Mapped[str] = mapped_column(String(50))
+    bride_name: Mapped[str] = mapped_column(String(50))
+    child_min_age: Mapped[int] = mapped_column(Integer, default=0)
+    child_max_age: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())

@@ -7,10 +7,10 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from models import Base, Tenant, User, Device, DeviceClaim
+from models import Base, Tenant, User, Device, DeviceClaim,WeddingEvent
 from schemas import (
     LoginReq, LoginResp, ChangePwReq,
-    DeviceAvailability, ClaimReq, ReleaseReq
+    DeviceAvailability, ClaimReq, ReleaseReq,WeddingEventIn, WeddingEventOut
 )
 from auth import verify_pw, make_access_token, hash_pw, verify_access_token
 from manage_generate import seed_if_empty
@@ -240,6 +240,54 @@ def heartbeat(body: ClaimReq, s: Session = Depends(db)):
     claim.expires_at = datetime.utcnow() + timedelta(minutes=ttl_minutes)
     s.commit()
     return {"ok": True, "expires_at": claim.expires_at.isoformat()}
+
+
+@app.post("/wedding/event", response_model=WeddingEventOut)
+def create_wedding_event(
+    data: WeddingEventIn,
+    claims=Depends(require_auth),
+    s: Session = Depends(db)
+):
+    tenant_code = claims["tenant_code"]
+    tenant = s.scalars(select(Tenant).where(Tenant.code == tenant_code)).first()
+    if not tenant:
+        raise HTTPException(404, "tenant not found")
+
+    event = WeddingEvent(
+        tenant_id=tenant.id,
+        event_date=data.event_date,
+        start_time=data.start_time,
+        title=data.title,
+        groom_name=data.groom_name,
+        bride_name=data.bride_name,
+        child_min_age=data.child_min_age or 0,
+        child_max_age=data.child_max_age or 0,
+    )
+    s.add(event)
+    s.commit()
+    s.refresh(event)
+    return event
+
+
+@app.get("/wedding/event/list", response_model=list[WeddingEventOut])
+def list_wedding_events(
+    claims=Depends(require_auth),
+    s: Session = Depends(db)
+):
+    tenant_code = claims["tenant_code"]
+    tenant = s.scalars(select(Tenant).where(Tenant.code == tenant_code)).first()
+    if not tenant:
+        raise HTTPException(404, "tenant not found")
+
+    events = (
+        s.query(WeddingEvent)
+        .filter(WeddingEvent.tenant_id == tenant.id)
+        .order_by(WeddingEvent.event_date.desc(), WeddingEvent.start_time.asc())
+        .all()
+    )
+    return events
+
+
 
 # ─────────────────────────────────────────────
 @app.get("/health")
