@@ -72,3 +72,11 @@ class TicketStat(Base):
     event_title: Mapped[str] = mapped_column(String(100))
     adult_count: Mapped[int] = mapped_column(Integer, default=0)
     child_count: Mapped[int] = mapped_column(Integer, default=0)
+
+class TicketPrice(Base):
+    __tablename__ = "ticket_prices"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    adult_price: Mapped[int] = mapped_column(Integer, default=0)
+    child_price: Mapped[int] = mapped_column(Integer, default=0)
+

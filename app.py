@@ -7,7 +7,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from models import Base, Tenant, User, Device, DeviceClaim,WeddingEvent, TicketStat
+from models import Base, Tenant, User, Device, DeviceClaim,WeddingEvent, TicketStat, TicketPrice
 from schemas import (
     LoginReq, LoginResp, ChangePwReq,
     DeviceAvailability, ClaimReq, ReleaseReq,WeddingEventIn, WeddingEventOut
@@ -403,9 +403,83 @@ def get_ticket_stats(s: Session = Depends(db), claims=Depends(require_auth)):
         .first()
     )
     if not stat:
-        return {"adult_count": 0, "child_count": 0}
-    return {"adult_count": stat.adult_count, "child_count": stat.child_count}
+        # 데이터가 없으면 전부 0 반환
+        return {
+            "adult_count": 0,
+            "child_count": 0,
+            "adult_total": 0,
+            "child_total": 0,
+            "total_sum": 0
+        }
 
+    # ✅ 가격 불러오기
+    price = (
+        s.query(TicketPrice)
+        .filter(TicketPrice.tenant_id == tenant.id)
+        .first()
+    )
+
+    adult_total = stat.adult_count * (price.adult_price if price else 0)
+    child_total = stat.child_count * (price.child_price if price else 0)
+    total_sum = adult_total + child_total
+
+    return {
+        "adult_count": stat.adult_count,
+        "child_count": stat.child_count,
+        "adult_total": adult_total,
+        "child_total": child_total,
+        "total_sum": total_sum
+    }
+
+# ✅ 식권 가격 설정/조회 ---------------------------------------------------------
+
+@app.post("/wedding/ticket/price")
+def set_ticket_price(data: dict, s: Session = Depends(db), claims=Depends(require_auth)):
+    tenant_code = claims["tenant_code"]
+    tenant = s.scalars(select(Tenant).where(Tenant.code == tenant_code)).first()
+    if not tenant:
+        raise HTTPException(404, "tenant not found")
+
+    adult_price = int(data.get("adult_price", 0))
+    child_price = int(data.get("child_price", 0))
+
+    price = (
+        s.query(TicketPrice)
+        .filter(TicketPrice.tenant_id == tenant.id)
+        .first()
+    )
+
+    if not price:
+        price = TicketPrice(
+            tenant_id=tenant.id,
+            adult_price=adult_price,
+            child_price=child_price,
+        )
+        s.add(price)
+    else:
+        price.adult_price = adult_price
+        price.child_price = child_price
+
+    s.commit()
+    s.refresh(price)
+    return {"ok": True, "adult_price": price.adult_price, "child_price": price.child_price}
+
+
+@app.get("/wedding/ticket/price")
+def get_ticket_price(s: Session = Depends(db), claims=Depends(require_auth)):
+    tenant_code = claims["tenant_code"]
+    tenant = s.scalars(select(Tenant).where(Tenant.code == tenant_code)).first()
+    if not tenant:
+        raise HTTPException(404, "tenant not found")
+
+    price = (
+        s.query(TicketPrice)
+        .filter(TicketPrice.tenant_id == tenant.id)
+        .first()
+    )
+    if not price:
+        return {"adult_price": 0, "child_price": 0}
+    return {"adult_price": price.adult_price, "child_price": price.child_price}
 
 # ─────────────────────────────────────────────
 @app.get("/health")
