@@ -376,8 +376,18 @@ def issue_ticket(data: dict, s: Session = Depends(db), claims=Depends(require_au
     )
 
     if not stat:
-        stat = TicketStat(tenant_id=tenant.id, event_title=event_title)
+        stat = TicketStat(
+            tenant_id=tenant.id,
+            event_title=event_title,
+            adult_count=0,
+            child_count=0
+        )
         s.add(stat)
+        s.flush()  # ⚡ ID 할당 (optional)
+
+    # ✅ None 방지
+    stat.adult_count = stat.adult_count or 0
+    stat.child_count = stat.child_count or 0
 
     if ttype == "성인":
         stat.adult_count += count
@@ -387,6 +397,7 @@ def issue_ticket(data: dict, s: Session = Depends(db), claims=Depends(require_au
     s.commit()
     s.refresh(stat)
     return {"ok": True, "adult_count": stat.adult_count, "child_count": stat.child_count}
+
 
 
 @app.get("/wedding/ticket/stats")
