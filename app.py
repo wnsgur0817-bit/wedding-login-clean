@@ -227,6 +227,19 @@ def release_device(body: ReleaseReq, s: Session = Depends(db)):
     s.commit()
     return {"ok": bool(deleted)}
 
+# ✅ 여기에 추가
+@app.get("/devices/list")
+def list_devices_by_tenant(tenant: str, s: Session = Depends(db)):
+    tenant_obj = s.scalars(select(Tenant).where(Tenant.code == tenant)).first()
+    if not tenant_obj:
+        raise HTTPException(404, "tenant not found")
+    devices = s.scalars(select(Device).where(Device.tenant_id == tenant_obj.id)).all()
+    return [
+        {"id": d.id, "tenant_code": tenant, "code": d.device_code,
+         "active": bool(d.active), "activation_code": d.activation_code}
+        for d in devices
+    ]
+
 @app.post("/devices/heartbeat")
 def heartbeat(body: ClaimReq, s: Session = Depends(db)):
     """주기적으로 호출하여 expires_at 연장 (앱에서 30~60초 간격 권장)"""
