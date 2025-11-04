@@ -242,6 +242,10 @@ def heartbeat(body: ClaimReq, s: Session = Depends(db)):
     return {"ok": True, "expires_at": claim.expires_at.isoformat()}
 
 # ─────────────────────────────────────────────
-@app.get("/healthz")
-def healthz():
-    return {"ok": True}
+@app.get("/health")
+def health():
+    """Render keep-alive 엔드포인트"""
+    return {
+        "status": "ok",
+        "server_time": datetime.now().isoformat()
+    }
