@@ -1,4 +1,5 @@
-﻿import os, time, jwt
+﻿#auth.py
+import os, time, jwt
 from argon2 import PasswordHasher
 
 ph = PasswordHasher()

@@ -7,7 +7,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from models import Base, Tenant, User, Device, DeviceClaim,WeddingEvent
+from models import Base, Tenant, User, Device, DeviceClaim,WeddingEvent, TicketStat
 from schemas import (
     LoginReq, LoginResp, ChangePwReq,
     DeviceAvailability, ClaimReq, ReleaseReq,WeddingEventIn, WeddingEventOut
@@ -138,6 +138,24 @@ def change_password(body: ChangePwReq, s: Session = Depends(db)):
         raise
     except Exception as e:
         raise HTTPException(500, f"change_password failed: {e}")
+
+@app.post("/auth/verify_password")
+def verify_password(data: dict, s: Session = Depends(db), claims=Depends(require_auth)):
+    tenant_code = claims["tenant_code"]
+    password = data.get("password")
+    if not password:
+        raise HTTPException(400, "password required")
+
+    tenant = s.scalars(select(Tenant).where(Tenant.code == tenant_code)).first()
+    if not tenant:
+        raise HTTPException(404, "tenant not found")
+
+    # ✅ 비밀번호 검증
+    if not verify_pw(password, tenant.pw_hash):
+        return {"valid": False}
+    return {"valid": True}
+
+
 
 @app.get("/auth/me")
 def me(claims=Depends(require_auth)):
@@ -309,6 +327,84 @@ def list_wedding_events(
     )
     return events
 
+@app.delete("/wedding/event/{event_id}")
+def delete_wedding_event(
+    event_id: int,
+    claims=Depends(require_auth),
+    s: Session = Depends(db)
+):
+    tenant_code = claims["tenant_code"]
+
+    tenant = s.scalars(select(Tenant).where(Tenant.code == tenant_code)).first()
+    if not tenant:
+        raise HTTPException(404, "tenant not found")
+
+    event = (
+        s.query(WeddingEvent)
+        .filter(WeddingEvent.tenant_id == tenant.id)
+        .filter(WeddingEvent.id == event_id)
+        .first()
+    )
+    if not event:
+        raise HTTPException(404, "event not found")
+
+    s.delete(event)
+    s.commit()
+    return {"ok": True, "deleted_id": event_id}
+
+# ✅ 식권 발급 기록 및 누적 조회 -----------------------------
+
+@app.post("/wedding/ticket/issue")
+def issue_ticket(data: dict, s: Session = Depends(db), claims=Depends(require_auth)):
+    tenant_code = claims["tenant_code"]
+    tenant = s.scalars(select(Tenant).where(Tenant.code == tenant_code)).first()
+    if not tenant:
+        raise HTTPException(404, "tenant not found")
+
+    event_title = data.get("event_title")
+    ttype = data.get("type")
+    count = int(data.get("count", 0))
+
+    if not event_title or ttype not in ("성인", "어린이"):
+        raise HTTPException(400, "invalid data")
+
+    stat = (
+        s.query(TicketStat)
+        .filter(TicketStat.tenant_id == tenant.id)
+        .filter(TicketStat.event_title == event_title)
+        .first()
+    )
+
+    if not stat:
+        stat = TicketStat(tenant_id=tenant.id, event_title=event_title)
+        s.add(stat)
+
+    if ttype == "성인":
+        stat.adult_count += count
+    else:
+        stat.child_count += count
+
+    s.commit()
+    s.refresh(stat)
+    return {"ok": True, "adult_count": stat.adult_count, "child_count": stat.child_count}
+
+
+@app.get("/wedding/ticket/stats")
+def get_ticket_stats(s: Session = Depends(db), claims=Depends(require_auth)):
+    tenant_code = claims["tenant_code"]
+    tenant = s.scalars(select(Tenant).where(Tenant.code == tenant_code)).first()
+    if not tenant:
+        raise HTTPException(404, "tenant not found")
+
+    stat = (
+        s.query(TicketStat)
+        .filter(TicketStat.tenant_id == tenant.id)
+        .order_by(TicketStat.id.desc())
+        .first()
+    )
+    if not stat:
+        return {"adult_count": 0, "child_count": 0}
+    return {"adult_count": stat.adult_count, "child_count": stat.child_count}
 
 
 # ─────────────────────────────────────────────

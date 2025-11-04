@@ -1,4 +1,5 @@
-﻿from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship,declarative_base
+﻿#models.py
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship,declarative_base
 from sqlalchemy import String, Integer, ForeignKey, UniqueConstraint, DateTime, func,Column
 from datetime import datetime, date, time
 
@@ -63,3 +64,11 @@ class WeddingEvent(Base):
     child_max_age: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+class TicketStat(Base):
+    __tablename__ = "ticket_stats"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    event_title: Mapped[str] = mapped_column(String(100))
+    adult_count: Mapped[int] = mapped_column(Integer, default=0)
+    child_count: Mapped[int] = mapped_column(Integer, default=0)
