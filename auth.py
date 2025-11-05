@@ -16,13 +16,14 @@ def verify_pw(raw: str, hashed: str) -> bool:
     except Exception:
         return False
 
-def make_access_token(*, sub: str, tenant_code: str, role: str, token_version: int) -> str:  # NEW
+def make_access_token(*, sub: str, tenant_code: str, role: str, token_version: int, device_code: str) -> str:
     now = int(time.time())
     payload = {
         "sub": sub,
         "tenant_id": tenant_code,
+        "device_code": device_code,  # ✅ 추가
         "role": role,
-        "tv": token_version,      # NEW: 세션 버전
+        "tv": token_version,
         "iat": now,
         "exp": now + JWT_TTL
     }

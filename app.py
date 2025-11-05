@@ -289,12 +289,19 @@ def create_wedding_event(
     s: Session = Depends(db)
 ):
     tenant_code = claims["tenant_code"]
+    device_code = claims.get("device_code")
     tenant = s.scalars(select(Tenant).where(Tenant.code == tenant_code)).first()
     if not tenant:
         raise HTTPException(404, "tenant not found")
 
+    hall_name = (data.hall_name or "").strip()
+    if not hall_name:
+        raise HTTPException(400, "hall_name required")
     event = WeddingEvent(
         tenant_id=tenant.id,
+        device_code=device_code,
+        owner_type=data.owner_type,
+        hall_name=data.hall_name,  # ✅ 추가
         event_date=data.event_date,
         start_time=data.start_time,
         title=data.title,
@@ -309,22 +316,36 @@ def create_wedding_event(
     return event
 
 
+
 @app.get("/wedding/event/list", response_model=list[WeddingEventOut])
-def list_wedding_events(
-    claims=Depends(require_auth),
-    s: Session = Depends(db)
-):
+def list_wedding_events(claims=Depends(require_auth), s: Session = Depends(db)):
     tenant_code = claims["tenant_code"]
+    device_code = claims.get("device_code")
+
     tenant = s.scalars(select(Tenant).where(Tenant.code == tenant_code)).first()
     if not tenant:
         raise HTTPException(404, "tenant not found")
 
-    events = (
-        s.query(WeddingEvent)
-        .filter(WeddingEvent.tenant_id == tenant.id)
-        .order_by(WeddingEvent.event_date.desc(), WeddingEvent.start_time.asc())
-        .all()
-    )
+    q = s.query(WeddingEvent).filter(WeddingEvent.tenant_id == tenant.id)
+
+    # ✅ 부조석은 자기 디바이스만
+    if device_code != "D-ADMIN":
+        q = q.filter(WeddingEvent.device_code == device_code)
+
+    events = q.order_by(WeddingEvent.event_date.desc(), WeddingEvent.start_time.asc()).all()
+
+    # ✅ 관리자일 경우 중복 예식 묶기
+    if device_code == "D-ADMIN":
+        merged = {}
+        for e in events:
+            key = (e.hall_name, e.event_date, e.start_time, e.groom_name, e.bride_name)
+            if key not in merged:
+                merged[key] = e
+            else:
+                # 신랑/신부 조합이 이미 존재하면 생략 (중복 제거 효과)
+                continue
+        events = list(merged.values())
+
     return events
 
 @app.delete("/wedding/event/{event_id}")
@@ -334,6 +355,11 @@ def delete_wedding_event(
     s: Session = Depends(db)
 ):
     tenant_code = claims["tenant_code"]
+    device_code = claims.get("device_code")
+
+    # ✅ 관리자 전용 보호
+    if device_code != "D-ADMIN":
+        raise HTTPException(403, "Access denied: not admin device")
 
     tenant = s.scalars(select(Tenant).where(Tenant.code == tenant_code)).first()
     if not tenant:
@@ -352,11 +378,13 @@ def delete_wedding_event(
     s.commit()
     return {"ok": True, "deleted_id": event_id}
 
+
 # ✅ 식권 발급 기록 및 누적 조회 -----------------------------
 
 @app.post("/wedding/ticket/issue")
 def issue_ticket(data: dict, s: Session = Depends(db), claims=Depends(require_auth)):
     tenant_code = claims["tenant_code"]
+    device_code = claims.get("device_code")  # ✅ 추가
     tenant = s.scalars(select(Tenant).where(Tenant.code == tenant_code)).first()
     if not tenant:
         raise HTTPException(404, "tenant not found")
@@ -365,29 +393,25 @@ def issue_ticket(data: dict, s: Session = Depends(db), claims=Depends(require_au
     ttype = data.get("type")
     count = int(data.get("count", 0))
 
-    if not event_title or ttype not in ("성인", "어린이"):
-        raise HTTPException(400, "invalid data")
-
     stat = (
         s.query(TicketStat)
         .filter(TicketStat.tenant_id == tenant.id)
+        .filter(TicketStat.device_code == device_code)  # ✅ 추가
         .filter(TicketStat.event_title == event_title)
+        .filter(TicketStat.hall_name == data.get("hall_name"))
         .first()
     )
 
     if not stat:
         stat = TicketStat(
             tenant_id=tenant.id,
+            device_code=device_code,
+            hall_name=data.get("hall_name"),
             event_title=event_title,
             adult_count=0,
             child_count=0
         )
         s.add(stat)
-        s.flush()  # ⚡ ID 할당 (optional)
-
-    # ✅ None 방지
-    stat.adult_count = stat.adult_count or 0
-    stat.child_count = stat.child_count or 0
 
     if ttype == "성인":
         stat.adult_count += count
@@ -398,23 +422,116 @@ def issue_ticket(data: dict, s: Session = Depends(db), claims=Depends(require_au
     s.refresh(stat)
     return {"ok": True, "adult_count": stat.adult_count, "child_count": stat.child_count}
 
+@app.get("/wedding/ticket/admin_summary")
+def get_admin_summary(s: Session = Depends(db), claims=Depends(require_auth)):
+    tenant_code = claims["tenant_code"]
+    device_code = claims.get("device_code")
+
+    if device_code != "D-ADMIN":
+        raise HTTPException(403, "Access denied: not admin device")
+
+    tenant = s.scalars(select(Tenant).where(Tenant.code == tenant_code)).first()
+    if not tenant:
+        raise HTTPException(404, "tenant not found")
+
+    stats = (
+        s.query(TicketStat, WeddingEvent)
+        .join(
+            WeddingEvent,
+            (WeddingEvent.device_code == TicketStat.device_code) &
+            (WeddingEvent.hall_name == TicketStat.hall_name)
+        )
+        .filter(TicketStat.tenant_id == tenant.id)
+        .all()
+    )
+
+    price = s.query(TicketPrice).filter(TicketPrice.tenant_id == tenant.id).first()
+    adult_price = price.adult_price if price else 0
+    child_price = price.child_price if price else 0
+
+    # ✅ 예식별 합산 구조
+    summary = {}
+    for st, ev in stats:
+        key = (ev.hall_name, ev.event_date, ev.start_time, ev.groom_name, ev.bride_name)
+        if key not in summary:
+            summary[key] = {
+                "hall": ev.hall_name,
+                "groom": ev.groom_name,
+                "bride": ev.bride_name,
+                "date": ev.event_date,
+                "time": ev.start_time,
+                "groom_adult": 0, "groom_child": 0,
+                "bride_adult": 0, "bride_child": 0,
+            }
+
+        if ev.owner_type == "groom":
+            summary[key]["groom_adult"] += st.adult_count
+            summary[key]["groom_child"] += st.child_count
+        else:
+            summary[key]["bride_adult"] += st.adult_count
+            summary[key]["bride_child"] += st.child_count
+
+    # ✅ 금액 계산 포함
+    result = []
+    for v in summary.values():
+        groom_total = (v["groom_adult"] * adult_price) + (v["groom_child"] * child_price)
+        bride_total = (v["bride_adult"] * adult_price) + (v["bride_child"] * child_price)
+        v["total_adult"] = v["groom_adult"] + v["bride_adult"]
+        v["total_child"] = v["groom_child"] + v["bride_child"]
+        v["total_sum"] = groom_total + bride_total
+        v["groom_total"] = groom_total
+        v["bride_total"] = bride_total
+        result.append(v)
+
+    return result
+
+
 
 
 @app.get("/wedding/ticket/stats")
 def get_ticket_stats(s: Session = Depends(db), claims=Depends(require_auth)):
     tenant_code = claims["tenant_code"]
+    device_code = claims.get("device_code")  # ✅ 추가
+
     tenant = s.scalars(select(Tenant).where(Tenant.code == tenant_code)).first()
     if not tenant:
         raise HTTPException(404, "tenant not found")
 
+    # ✅ D-ADMIN(관리자)인 경우 전체 합계 반환
+    if device_code == "D-ADMIN":
+        stats = s.query(TicketStat).filter(TicketStat.tenant_id == tenant.id).all()
+        if not stats:
+            return {"adult_count": 0, "child_count": 0, "adult_total": 0, "child_total": 0, "total_sum": 0}
+
+        # 가격 불러오기
+        price = s.query(TicketPrice).filter(TicketPrice.tenant_id == tenant.id).first()
+        adult_price = price.adult_price if price else 0
+        child_price = price.child_price if price else 0
+
+        # ✅ 전체 디바이스 합산
+        adult_sum = sum(s.adult_count for s in stats)
+        child_sum = sum(s.child_count for s in stats)
+        adult_total = adult_sum * adult_price
+        child_total = child_sum * child_price
+        total_sum = adult_total + child_total
+
+        return {
+            "adult_count": adult_sum,
+            "child_count": child_sum,
+            "adult_total": adult_total,
+            "child_total": child_total,
+            "total_sum": total_sum
+        }
+
+    # ✅ 일반 디바이스는 자기 데이터만
     stat = (
         s.query(TicketStat)
         .filter(TicketStat.tenant_id == tenant.id)
+        .filter(TicketStat.device_code == device_code)  # ✅ 디바이스별 분리
         .order_by(TicketStat.id.desc())
         .first()
     )
     if not stat:
-        # 데이터가 없으면 전부 0 반환
         return {
             "adult_count": 0,
             "child_count": 0,
@@ -423,13 +540,7 @@ def get_ticket_stats(s: Session = Depends(db), claims=Depends(require_auth)):
             "total_sum": 0
         }
 
-    # ✅ 가격 불러오기
-    price = (
-        s.query(TicketPrice)
-        .filter(TicketPrice.tenant_id == tenant.id)
-        .first()
-    )
-
+    price = s.query(TicketPrice).filter(TicketPrice.tenant_id == tenant.id).first()
     adult_total = stat.adult_count * (price.adult_price if price else 0)
     child_total = stat.child_count * (price.child_price if price else 0)
     total_sum = adult_total + child_total
@@ -441,6 +552,7 @@ def get_ticket_stats(s: Session = Depends(db), claims=Depends(require_auth)):
         "child_total": child_total,
         "total_sum": total_sum
     }
+
 
 # ✅ 식권 가격 설정/조회 ---------------------------------------------------------
 

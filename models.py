@@ -53,10 +53,16 @@ class DeviceClaim(Base):
 
 class WeddingEvent(Base):
     __tablename__ = "wedding_events"
+
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    device_code: Mapped[str] = mapped_column(String(32), index=True)
+    owner_type: Mapped[str] = mapped_column(String(16), default="groom", nullable=False)
+
+    hall_name: Mapped[str] = mapped_column(String(20), nullable=False)  # ✅ 추가
+
     event_date: Mapped[date] = mapped_column(DateTime)
-    start_time: Mapped[str] = mapped_column(String(8))  # "11:00"
+    start_time: Mapped[str] = mapped_column(String(8))
     title: Mapped[str] = mapped_column(String(100))
     groom_name: Mapped[str] = mapped_column(String(50))
     bride_name: Mapped[str] = mapped_column(String(50))
@@ -67,10 +73,11 @@ class WeddingEvent(Base):
 
 class TicketStat(Base):
     __tablename__ = "ticket_stats"
-
     id = Column(Integer, primary_key=True)
     tenant_id = Column(Integer, ForeignKey("tenants.id"))
+    device_code = Column(String, nullable=False, index=True)  # ✅ 추가
     event_title = Column(String, nullable=False)
+    hall_name = Column(String, nullable=True)
     adult_count = Column(Integer, default=0, nullable=False)
     child_count = Column(Integer, default=0, nullable=False)
 
