@@ -7,7 +7,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from models import Base, Tenant, User, Device, DeviceClaim,WeddingEvent, TicketStat, TicketPrice, Event,TicketStats
+from models import Base, Tenant, User, Device, DeviceClaim,WeddingEvent, TicketStat, TicketPrice,TicketStats
 from schemas import (
     LoginReq, LoginResp, ChangePwReq,
     DeviceAvailability, ClaimReq, ReleaseReq,WeddingEventIn, WeddingEventOut
