@@ -110,6 +110,7 @@ def login(body: LoginReq, s: Session = Depends(db)):
             tenant_code=tenant.code,
             role=user.role,
             token_version=tv,
+            device_code="unknown"
         )
         return {
             "access_token": token,
