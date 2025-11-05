@@ -75,6 +75,7 @@ class TicketStat(Base):
     __tablename__ = "ticket_stats"
     id = Column(Integer, primary_key=True)
     tenant_id = Column(Integer, ForeignKey("tenants.id"))
+    event_id = Column(Integer, ForeignKey("wedding_events.id"))
     device_code = Column(String, nullable=False, index=True)  # ✅ 추가
     event_title = Column(String, nullable=False)
     hall_name = Column(String, nullable=True)

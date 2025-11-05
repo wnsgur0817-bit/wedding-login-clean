@@ -1,26 +1,27 @@
 ﻿# app.py
 import os, re
 from datetime import datetime, timedelta
-from fastapi import FastAPI, HTTPException, Depends, Header
+from fastapi import FastAPI, HTTPException, Depends, Header,APIRouter
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from models import Base, Tenant, User, Device, DeviceClaim,WeddingEvent, TicketStat, TicketPrice
+from models import Base, Tenant, User, Device, DeviceClaim,WeddingEvent, TicketStat, TicketPrice, Event,TicketStats
 from schemas import (
     LoginReq, LoginResp, ChangePwReq,
     DeviceAvailability, ClaimReq, ReleaseReq,WeddingEventIn, WeddingEventOut
 )
 from auth import verify_pw, make_access_token, hash_pw, verify_access_token
 from manage_generate import seed_if_empty
+from database import get_db
 
 # ─────────────────────────────────────────────
 # DB
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///app.db")
 engine = create_engine(DATABASE_URL, future=True)
 Base.metadata.create_all(engine)
-
+router = APIRouter(prefix="/wedding/ticket", tags=["wedding-ticket"])
 def db():
     with Session(engine) as s:
         yield s
@@ -375,8 +376,14 @@ def delete_wedding_event(
     if not event:
         raise HTTPException(404, "event not found")
 
+    # ✅ 관련 통계 데이터(식권 발급 내역 포함) 모두 삭제
+    s.query(TicketStat).filter(TicketStat.event_id == event_id).delete()
+    s.query(TicketStats).filter(TicketStats.event_id == event_id).delete()
+
+    # ✅ 예식 자체 삭제
     s.delete(event)
     s.commit()
+
     return {"ok": True, "deleted_id": event_id}
 
 
@@ -385,43 +392,209 @@ def delete_wedding_event(
 @app.post("/wedding/ticket/issue")
 def issue_ticket(data: dict, s: Session = Depends(db), claims=Depends(require_auth)):
     tenant_code = claims["tenant_code"]
-    device_code = claims.get("device_code")  # ✅ 추가
+    device_code = claims.get("device_code")
     tenant = s.scalars(select(Tenant).where(Tenant.code == tenant_code)).first()
     if not tenant:
         raise HTTPException(404, "tenant not found")
 
+    event_id = data.get("event_id")  # ✅ event_id 기준으로 분리
     event_title = data.get("event_title")
+    hall_name = data.get("hall_name")
     ttype = data.get("type")
     count = int(data.get("count", 0))
 
+    if not event_id:
+        raise HTTPException(400, "event_id is required")
+
+    # ✅ event_id 기준으로 TicketStat을 찾음 (중복 예식 분리)
     stat = (
         s.query(TicketStat)
         .filter(TicketStat.tenant_id == tenant.id)
-        .filter(TicketStat.device_code == device_code)  # ✅ 추가
-        .filter(TicketStat.event_title == event_title)
-        .filter(TicketStat.hall_name == data.get("hall_name"))
+        .filter(TicketStat.event_id == event_id)  # ✅ 추가
+        .filter(TicketStat.device_code == device_code)
         .first()
     )
 
+    # ✅ 없으면 새로 생성
     if not stat:
         stat = TicketStat(
             tenant_id=tenant.id,
+            event_id=event_id,  # ✅ 저장
             device_code=device_code,
-            hall_name=data.get("hall_name"),
+            hall_name=hall_name,
             event_title=event_title,
             adult_count=0,
-            child_count=0
+            child_count=0,
         )
         s.add(stat)
 
+    # ✅ 발급 수량 처리
     if ttype == "성인":
         stat.adult_count += count
-    else:
+    elif ttype == "어린이":
         stat.child_count += count
+    else:
+        raise HTTPException(400, f"Unknown ticket type: {ttype}")
 
     s.commit()
     s.refresh(stat)
-    return {"ok": True, "adult_count": stat.adult_count, "child_count": stat.child_count}
+
+    # ✅ 해당 예식 통계 갱신
+    update_stats_for_event(s, event_id)
+
+    return {
+        "ok": True,
+        "event_id": event_id,
+        "adult_count": stat.adult_count,
+        "child_count": stat.child_count,
+    }
+
+
+@app.get("/wedding/ticket/event_summary/{event_id}")
+def get_event_summary(event_id: int, db: Session = Depends(get_db), current_user=Depends(auth_required)):
+    event = db.query(WeddingEvent).filter(WeddingEvent.id == event_id).first()
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+
+    groom_stats = db.query(TicketStat).filter_by(event_id=event_id).filter(WeddingEvent.owner_type == "groom").all()
+    bride_stats = db.query(TicketStat).filter_by(event_id=event_id).filter(WeddingEvent.owner_type == "bride").all()
+
+    return {
+        "event": {
+            "title": event.title,
+            "hall_name": event.hall_name,
+            "date": event.event_date,
+        },
+        "groom": {
+            "adult": sum(s.adult_count for s in groom_stats),
+            "child": sum(s.child_count for s in groom_stats),
+        },
+        "bride": {
+            "adult": sum(s.adult_count for s in bride_stats),
+            "child": sum(s.child_count for s in bride_stats),
+        },
+    }
+
+
+
+def update_stats_for_event(db: Session, event_id: int):
+    """예식별 통계 자동 집계 (식권/식당/답례품/미사용/금액)"""
+    event = db.query(Event).filter(Event.id == event_id).first()
+    if not event:
+        return
+
+    tenant = db.query(Tenant).filter(Tenant.id == event.tenant_id).first()
+    if not tenant:
+        return
+
+    # ✅ 단가 조회
+    price = db.query(TicketPrice).filter(TicketPrice.tenant_id == tenant.id).first()
+    adult_price = price.adult_price if price else 0
+    child_price = price.child_price if price else 0
+
+    # ✅ 기존 통계 가져오기 or 새로 생성
+    groom_stats = db.query(TicketStats).filter_by(event_id=event_id, side="groom").first()
+    bride_stats = db.query(TicketStats).filter_by(event_id=event_id, side="bride").first()
+
+    if not groom_stats:
+        groom_stats = TicketStats(event_id=event_id, side="groom")
+        db.add(groom_stats)
+    if not bride_stats:
+        bride_stats = TicketStats(event_id=event_id, side="bride")
+        db.add(bride_stats)
+
+    # ✅ 모든 발급 데이터 조회
+    records = (
+        db.query(TicketStat)
+        .filter(TicketStat.tenant_id == tenant.id)
+        .filter(TicketStat.event_title == event.title)
+        .filter(TicketStat.hall_name == event.hall_name)
+        .all()
+    )
+
+    # ✅ 분류: 부조석, 식당, 답례품
+    def group_by_device(device_code):
+        if device_code.startswith("D-A"):  # 부조석
+            return "booth"
+        elif device_code.startswith("D-R"):  # 식당
+            return "restaurant"
+        elif device_code.startswith("D-G"):  # 답례품
+            return "gift"
+        return "unknown"
+
+    # ✅ 신랑/신부별 누적 데이터 초기화
+    def base():
+        return {
+            "adult": 0,
+            "child": 0,
+            "restaurant_adult": 0,
+            "restaurant_child": 0,
+            "gift_adult": 0,
+            "gift_child": 0,
+        }
+
+    groom_data = base()
+    bride_data = base()
+
+    for r in records:
+        side = "groom" if "신랑" in r.event_title or r.device_code.endswith("1") else "bride"
+        category = group_by_device(r.device_code)
+
+        if side == "groom":
+            target = groom_data
+        else:
+            target = bride_data
+
+        if category == "booth":
+            target["adult"] += r.adult_count
+            target["child"] += r.child_count
+        elif category == "restaurant":
+            target["restaurant_adult"] += r.adult_count
+            target["restaurant_child"] += r.child_count
+        elif category == "gift":
+            target["gift_adult"] += r.adult_count
+            target["gift_child"] += r.child_count
+
+    # ✅ 미사용 계산
+    def compute_unused(d):
+        total_adult = d["adult"]
+        total_child = d["child"]
+        used_adult = d["restaurant_adult"] + d["gift_adult"]
+        used_child = d["restaurant_child"] + d["gift_child"]
+        return {
+            "unused_adult": max(total_adult - used_adult, 0),
+            "unused_child": max(total_child - used_child, 0),
+            "unused_total": max((total_adult + total_child) - (used_adult + used_child), 0),
+        }
+
+    groom_unused = compute_unused(groom_data)
+    bride_unused = compute_unused(bride_data)
+
+    # ✅ 금액 계산
+    groom_price = (groom_data["adult"] * adult_price) + (groom_data["child"] * child_price)
+    bride_price = (bride_data["adult"] * adult_price) + (bride_data["child"] * child_price)
+
+    # ✅ DB 반영
+    def apply_to_model(m, d, u, price):
+        m.adult = d["adult"]
+        m.child = d["child"]
+        m.restaurant_adult = d["restaurant_adult"]
+        m.restaurant_child = d["restaurant_child"]
+        m.gift_adult = d["gift_adult"]
+        m.gift_child = d["gift_child"]
+        m.unused_adult = u["unused_adult"]
+        m.unused_child = u["unused_child"]
+        m.unused_total = u["unused_total"]
+        m.total_tickets = d["adult"] + d["child"]
+        m.price = price
+        m.grand_total = price
+
+    apply_to_model(groom_stats, groom_data, groom_unused, groom_price)
+    apply_to_model(bride_stats, bride_data, bride_unused, bride_price)
+
+    db.commit()
+
+
 
 @app.get("/wedding/ticket/admin_summary")
 def get_admin_summary(s: Session = Depends(db), claims=Depends(require_auth)):
@@ -604,6 +777,113 @@ def get_ticket_price(s: Session = Depends(db), claims=Depends(require_auth)):
     if not price:
         return {"adult_price": 0, "child_price": 0}
     return {"adult_price": price.adult_price, "child_price": price.child_price}
+
+@app.post("/wedding/ticket/scan")
+def scan_ticket(data: dict, db: Session = Depends(db), claims=Depends(require_auth)):
+    """
+    ✅ QR 스캔 처리 (식당 / 답례품 디바이스 공용)
+    data = {
+        "event_id": 18,
+        "device_code": "D-R1",  # 예: 식당 / 답례품 / 기타
+        "type": "성인" or "어린이"
+    }
+    """
+    event_id = data.get("event_id")
+    device_code = data.get("device_code")
+    ttype = data.get("type")
+    count = int(data.get("count", 1))
+
+    event = db.query(Event).filter(Event.id == event_id).first()
+    if not event:
+        raise HTTPException(404, "event not found")
+
+    tenant = db.query(Tenant).filter(Tenant.id == event.tenant_id).first()
+    if not tenant:
+        raise HTTPException(404, "tenant not found")
+
+    stat = (
+        db.query(TicketStat)
+        .filter(TicketStat.tenant_id == tenant.id)
+        .filter(TicketStat.event_title == event.title)
+        .filter(TicketStat.hall_name == event.hall_name)
+        .filter(TicketStat.device_code == device_code)
+        .first()
+    )
+
+    if not stat:
+        stat = TicketStat(
+            tenant_id=tenant.id,
+            device_code=device_code,
+            hall_name=event.hall_name,
+            event_title=event.title,
+            adult_count=0,
+            child_count=0
+        )
+        db.add(stat)
+
+    # ✅ 식당/답례품 기기면 발급된 식권을 사용한 것으로 처리
+    if device_code.startswith("D-R") or device_code.startswith("D-G"):
+        if ttype == "성인":
+            stat.adult_count += count
+        else:
+            stat.child_count += count
+
+    db.commit()
+    db.refresh(stat)
+
+    # ✅ 미사용 갱신 포함 자동 집계
+    update_stats_for_event(db, event_id)
+
+    return {"ok": True, "device_code": device_code, "updated": True}
+
+
+@router.get("/event_summary/{event_id}")
+def get_event_summary(event_id: int, db: Session = Depends(get_db)):
+    # ✅ 예식 존재 여부 확인
+    event = db.query(Event).filter(Event.id == event_id).first()
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+
+    # ✅ 해당 예식의 통계 데이터 가져오기
+    groom = db.query(TicketStats).filter(
+        TicketStats.event_id == event_id, TicketStats.side == "groom"
+    ).first()
+    bride = db.query(TicketStats).filter(
+        TicketStats.event_id == event_id, TicketStats.side == "bride"
+    ).first()
+
+    # ✅ 데이터 기본값 처리
+    def safe(d):
+        return d if d else {
+            "adult": 0,
+            "child": 0,
+            "total_tickets": 0,
+            "price": 0,
+            "restaurant_adult": 0,
+            "restaurant_child": 0,
+            "gift_adult": 0,
+            "gift_child": 0,
+            "unused_adult": 0,
+            "unused_child": 0,
+            "unused_total": 0,
+            "grand_total": 0,
+        }
+
+    groom_data = safe(groom.__dict__ if groom else None)
+    bride_data = safe(bride.__dict__ if bride else None)
+
+    totals = {
+        "grand_total": groom_data["grand_total"] + bride_data["grand_total"],
+    }
+
+    return {"groom": groom_data, "bride": bride_data, "totals": totals}
+
+
+
+
+
+
+
 
 # ─────────────────────────────────────────────
 @app.get("/health")
