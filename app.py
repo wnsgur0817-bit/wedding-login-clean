@@ -501,26 +501,23 @@ def update_stats_for_event(s: Session, event_id: int):
     adult_price = price.adult_price if price else 0
     child_price = price.child_price if price else 0
 
-    # ✅ 기존 통계 가져오기 또는 새로 생성
-    groom_stats = s.query(TicketStat).filter_by(event_id=event_id).filter(WeddingEvent.owner_type == "groom").first()
-    bride_stats = s.query(TicketStat).filter_by(event_id=event_id).filter(WeddingEvent.owner_type == "bride").first()
-
-    # ✅ 모든 발급 데이터 조회
-    records = (
+    # ✅ 신랑/신부 구분은 WeddingEvent 기준으로 join 해서 조회
+    groom_records = (
         s.query(TicketStat)
+        .join(WeddingEvent, WeddingEvent.id == TicketStat.event_id)
         .filter(TicketStat.tenant_id == tenant.id)
-        .filter(TicketStat.event_id == event_id)
+        .filter(WeddingEvent.id == event_id)
+        .filter(WeddingEvent.owner_type == "groom")
         .all()
     )
-
-    def group_by_device(device_code):
-        if device_code.startswith("D-A"):  # 부조석
-            return "booth"
-        elif device_code.startswith("D-R"):  # 식당
-            return "restaurant"
-        elif device_code.startswith("D-G"):  # 답례품
-            return "gift"
-        return "unknown"
+    bride_records = (
+        s.query(TicketStat)
+        .join(WeddingEvent, WeddingEvent.id == TicketStat.event_id)
+        .filter(TicketStat.tenant_id == tenant.id)
+        .filter(WeddingEvent.id == event_id)
+        .filter(WeddingEvent.owner_type == "bride")
+        .all()
+    )
 
     def base():
         return {
@@ -535,20 +532,40 @@ def update_stats_for_event(s: Session, event_id: int):
     groom_data = base()
     bride_data = base()
 
-    for r in records:
-        side = "groom" if r.owner_type == "groom" else "bride"
-        category = group_by_device(r.device_code)
+    def group_by_device(device_code):
+        if device_code.startswith("D-A"):  # 부조석
+            return "booth"
+        elif device_code.startswith("D-R"):  # 식당
+            return "restaurant"
+        elif device_code.startswith("D-G"):  # 답례품
+            return "gift"
+        return "unknown"
 
-        target = groom_data if side == "groom" else bride_data
+    # ✅ 신랑
+    for r in groom_records:
+        category = group_by_device(r.device_code)
         if category == "booth":
-            target["adult"] += r.adult_count
-            target["child"] += r.child_count
+            groom_data["adult"] += r.adult_count
+            groom_data["child"] += r.child_count
         elif category == "restaurant":
-            target["restaurant_adult"] += r.adult_count
-            target["restaurant_child"] += r.child_count
+            groom_data["restaurant_adult"] += r.adult_count
+            groom_data["restaurant_child"] += r.child_count
         elif category == "gift":
-            target["gift_adult"] += r.adult_count
-            target["gift_child"] += r.child_count
+            groom_data["gift_adult"] += r.adult_count
+            groom_data["gift_child"] += r.child_count
+
+    # ✅ 신부
+    for r in bride_records:
+        category = group_by_device(r.device_code)
+        if category == "booth":
+            bride_data["adult"] += r.adult_count
+            bride_data["child"] += r.child_count
+        elif category == "restaurant":
+            bride_data["restaurant_adult"] += r.adult_count
+            bride_data["restaurant_child"] += r.child_count
+        elif category == "gift":
+            bride_data["gift_adult"] += r.adult_count
+            bride_data["gift_child"] += r.child_count
 
     def compute_unused(d):
         total_adult = d["adult"]
@@ -558,7 +575,9 @@ def update_stats_for_event(s: Session, event_id: int):
         return {
             "unused_adult": max(total_adult - used_adult, 0),
             "unused_child": max(total_child - used_child, 0),
-            "unused_total": max((total_adult + total_child) - (used_adult + used_child), 0),
+            "unused_total": max(
+                (total_adult + total_child) - (used_adult + used_child), 0
+            ),
         }
 
     groom_unused = compute_unused(groom_data)
@@ -568,6 +587,7 @@ def update_stats_for_event(s: Session, event_id: int):
     bride_price = (bride_data["adult"] * adult_price) + (bride_data["child"] * child_price)
 
     s.commit()
+
 
 
 
