@@ -6,6 +6,7 @@ from datetime import date
 class LoginReq(BaseModel):
     login_id: str
     password: str
+    device_code: Optional[str] = "unknown"
 
 class LoginResp(BaseModel):
     access_token: str

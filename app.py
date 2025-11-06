@@ -105,17 +105,27 @@ def login(body: LoginReq, s: Session = Depends(db)):
             raise HTTPException(401, "invalid credentials")
 
         tv = tenant.token_version or 1
+
+        # ✅ device_code를 클라이언트에서 받은 값으로 사용
+        device_code = getattr(body, "device_code", "unknown")
+
         token = make_access_token(
             sub=str(user.id),
             tenant_code=tenant.code,
             role=user.role,
             token_version=tv,
-            device_code="unknown"
+            device_code=device_code,  # ✅ 수정됨
         )
+
         return {
             "access_token": token,
-            "claims": {"tenant_id": tenant.code, "role": user.role}
+            "claims": {
+                "tenant_id": tenant.code,
+                "role": user.role,
+                "device_code": device_code,  # ✅ 추가하면 Flutter에서 디버깅 편함
+            },
         }
+
     except HTTPException:
         raise
     except Exception as e:
