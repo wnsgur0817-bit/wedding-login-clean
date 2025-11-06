@@ -40,10 +40,10 @@ class WeddingEventIn(BaseModel):
     groom_name: str
     bride_name: str
     title: str
-    hall_name: str  # ✅ 추가
+    hall_name: Optional[str] = None   # ✅ 수정됨
     child_min_age: int | None = None
     child_max_age: int | None = None
-    owner_type: str  # "groom" 또는 "bride"
+    owner_type: Optional[str] = None  # ✅ 수정됨
 
 class WeddingEventOut(WeddingEventIn):
     id: int
