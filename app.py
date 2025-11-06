@@ -604,40 +604,41 @@ def get_admin_summary(s: Session = Depends(db), claims=Depends(require_auth)):
     if not tenant:
         raise HTTPException(404, "tenant not found")
 
-    stats = (
-        s.query(TicketStat, WeddingEvent)
-        .join(
-            WeddingEvent,
-            (WeddingEvent.device_code == TicketStat.device_code) &
-            (WeddingEvent.hall_name == TicketStat.hall_name)
-        )
-        .filter(TicketStat.tenant_id == tenant.id)
-        .all()
-    )
-
+    # ✅ 항상 최신 가격 불러오기
     price = s.query(TicketPrice).filter(TicketPrice.tenant_id == tenant.id).first()
     adult_price = price.adult_price if price else 0
     child_price = price.child_price if price else 0
 
-    # ✅ 예식별 합산 구조
+    # ✅ TicketStat + WeddingEvent JOIN
+    stats = (
+        s.query(TicketStat, WeddingEvent)
+        .join(WeddingEvent, WeddingEvent.id == TicketStat.event_id)
+        .filter(TicketStat.tenant_id == tenant.id)
+        .all()
+    )
+
+    # ✅ 예식별 합산 구조 (신랑/신부 통합)
     summary = {}
     for st, ev in stats:
-        key = (ev.hall_name, ev.event_date, ev.start_time, ev.groom_name, ev.bride_name)
+        key = (ev.hall_name, ev.event_date, ev.start_time, ev.title)
         if key not in summary:
             summary[key] = {
                 "hall": ev.hall_name,
-                "groom": ev.groom_name,
-                "bride": ev.bride_name,
+                "title": ev.title,
                 "date": ev.event_date,
                 "time": ev.start_time,
+                "groom_name": ev.groom_name,
+                "bride_name": ev.bride_name,
                 "groom_adult": 0, "groom_child": 0,
                 "bride_adult": 0, "bride_child": 0,
+                "adult_price": adult_price,  # ✅ 가격도 표시
+                "child_price": child_price,
             }
 
         if ev.owner_type == "groom":
             summary[key]["groom_adult"] += st.adult_count
             summary[key]["groom_child"] += st.child_count
-        else:
+        elif ev.owner_type == "bride":
             summary[key]["bride_adult"] += st.adult_count
             summary[key]["bride_child"] += st.child_count
 
@@ -646,11 +647,14 @@ def get_admin_summary(s: Session = Depends(db), claims=Depends(require_auth)):
     for v in summary.values():
         groom_total = (v["groom_adult"] * adult_price) + (v["groom_child"] * child_price)
         bride_total = (v["bride_adult"] * adult_price) + (v["bride_child"] * child_price)
+
         v["total_adult"] = v["groom_adult"] + v["bride_adult"]
         v["total_child"] = v["groom_child"] + v["bride_child"]
-        v["total_sum"] = groom_total + bride_total
+        v["total_tickets"] = v["total_adult"] + v["total_child"]  # ✅ 총 식권 수 계산 추가
         v["groom_total"] = groom_total
         v["bride_total"] = bride_total
+        v["total_sum"] = groom_total + bride_total
+
         result.append(v)
 
     return result
