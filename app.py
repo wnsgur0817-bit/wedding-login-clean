@@ -14,7 +14,6 @@ from schemas import (
 )
 from auth import verify_pw, make_access_token, hash_pw, verify_access_token
 from manage_generate import seed_if_empty
-from database import get_db
 
 # ─────────────────────────────────────────────
 # DB
@@ -451,7 +450,7 @@ def issue_ticket(data: dict, s: Session = Depends(db), claims=Depends(require_au
 
 
 @app.get("/wedding/ticket/event_summary/{event_id}")
-def get_event_summary(event_id: int, db: Session = Depends(get_db), current_user=Depends(auth_required)):
+def get_event_summary(event_id: int, db: Session = Depends(db), current_user=Depends(auth_required)):
     event = db.query(WeddingEvent).filter(WeddingEvent.id == event_id).first()
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
@@ -838,7 +837,7 @@ def scan_ticket(data: dict, db: Session = Depends(db), claims=Depends(require_au
 
 
 @router.get("/event_summary/{event_id}")
-def get_event_summary(event_id: int, db: Session = Depends(get_db)):
+def get_event_summary(event_id: int, db: Session = Depends(db)):
     # ✅ 예식 존재 여부 확인
     event = db.query(Event).filter(Event.id == event_id).first()
     if not event:
