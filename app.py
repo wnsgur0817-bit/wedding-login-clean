@@ -17,7 +17,7 @@ from manage_generate import seed_if_empty
 
 # ─────────────────────────────────────────────
 # DB
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///app.db")
+DATABASE_URL = "postgresql+psycopg2://postgres:1q2w3e4R!@34.64.98.207:5432/wedding_db"
 engine = create_engine(DATABASE_URL, future=True)
 Base.metadata.create_all(engine)
 router = APIRouter(prefix="/wedding/ticket", tags=["wedding-ticket"])
