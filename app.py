@@ -35,6 +35,10 @@ app.add_middleware(
     allow_methods=["*"],
 )
 
+@app.get("/")
+def root():
+    return {"message": "Wedding backend running ✅"}
+
 @app.on_event("startup")
 def _maybe_seed():
     if os.getenv("AUTO_SEED", "false").lower() == "true":
