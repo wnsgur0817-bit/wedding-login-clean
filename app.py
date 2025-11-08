@@ -896,7 +896,7 @@ def get_event_summary(event_id: int, db: Session = Depends(db)):
 
 
 
-
+app.include_router(router)
 
 if __name__ == "__main__":
     import uvicorn
