@@ -897,14 +897,7 @@ def get_event_summary(event_id: int, db: Session = Depends(db)):
 
 
 
-# ─────────────────────────────────────────────
-@app.get("/health")
-def health():
-    """Render keep-alive 엔드포인트"""
-    return {
-        "status": "ok",
-        "server_time": datetime.now().isoformat()
-    }
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("app:app", host="0.0.0.0", port=8080)
