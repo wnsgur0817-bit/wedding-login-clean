@@ -547,7 +547,7 @@ def get_event_summary(event_id: int, s: Session = Depends(db), claims=Depends(re
 
 
 def update_stats_for_event(s: Session, event_id: int):
-    """예식별 통계 자동 집계 (Device.side 기준으로 신랑/신부 구분)"""
+    """예식별 통계 자동 집계 (홀 이름 + 예식시간 + 신랑/신부 이름 기준으로 묶음)"""
     event = s.query(WeddingEvent).filter(WeddingEvent.id == event_id).first()
     if not event:
         return
@@ -561,12 +561,15 @@ def update_stats_for_event(s: Session, event_id: int):
     adult_price = price.adult_price if price else 0
     child_price = price.child_price if price else 0
 
-    # ✅ TicketStat + Device 조인
+    # ✅ 같은 홀 + 예식시간 + 신랑/신부 이름이 동일한 예식 그룹 전체 조회
     records = (
-        s.query(TicketStat, Device)
-        .join(Device, Device.device_code == TicketStat.device_code)
+        s.query(TicketStat, WeddingEvent)
+        .join(WeddingEvent, WeddingEvent.id == TicketStat.event_id)
         .filter(TicketStat.tenant_id == tenant.id)
-        .filter(TicketStat.event_id == event_id)
+        .filter(WeddingEvent.hall_name == event.hall_name)
+        .filter(WeddingEvent.event_date == event.event_date)
+        .filter(WeddingEvent.groom_name == event.groom_name)
+        .filter(WeddingEvent.bride_name == event.bride_name)
         .all()
     )
 
@@ -597,14 +600,14 @@ def update_stats_for_event(s: Session, event_id: int):
             return "gift"
         return "unknown"
 
-    # ✅ 각 기록을 Device.side 기준으로 분류
-    for stat, device in records:
-        side = device.side or "unknown"
+    # ✅ 각 기록을 WeddingEvent.owner_type 기준으로 분류
+    for stat, ev in records:
+        side = ev.owner_type or "unknown"  # 'groom' 또는 'bride'
         category = group_by_device(stat.device_code)
 
         target = groom_data if side == "groom" else bride_data if side == "bride" else None
         if not target:
-            continue  # side 미지정 장비는 통계에서 제외
+            continue  # owner_type 미정이면 스킵
 
         if category == "booth":
             target["adult"] += stat.adult_count
@@ -620,7 +623,7 @@ def update_stats_for_event(s: Session, event_id: int):
     groom_price = (groom_data["adult"] * adult_price) + (groom_data["child"] * child_price)
     bride_price = (bride_data["adult"] * adult_price) + (bride_data["child"] * child_price)
 
-    # ✅ DB 반영
+    # ✅ DB 반영 (자동으로 합쳐진 결과를 한 예식에 기록)
     event.groom_adult_total = groom_data["adult"]
     event.groom_child_total = groom_data["child"]
     event.bride_adult_total = bride_data["adult"]
@@ -630,6 +633,7 @@ def update_stats_for_event(s: Session, event_id: int):
 
     s.add(event)
     s.commit()
+
 
 
 
