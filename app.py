@@ -468,15 +468,18 @@ def get_event_summary(event_id: int, s: Session = Depends(db), claims=Depends(re
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
+    # ✅ join 을 추가해서 신랑/신부 데이터를 정확히 구분
     groom_stats = (
         s.query(TicketStat)
-        .filter_by(event_id=event_id)
+        .join(WeddingEvent, WeddingEvent.id == TicketStat.event_id)
+        .filter(TicketStat.event_id == event_id)
         .filter(WeddingEvent.owner_type == "groom")
         .all()
     )
     bride_stats = (
         s.query(TicketStat)
-        .filter_by(event_id=event_id)
+        .join(WeddingEvent, WeddingEvent.id == TicketStat.event_id)
+        .filter(TicketStat.event_id == event_id)
         .filter(WeddingEvent.owner_type == "bride")
         .all()
     )
@@ -500,6 +503,7 @@ def get_event_summary(event_id: int, s: Session = Depends(db), claims=Depends(re
 
 
 
+
 def update_stats_for_event(s: Session, event_id: int):
     """예식별 통계 자동 집계"""
     event = s.query(WeddingEvent).filter(WeddingEvent.id == event_id).first()
@@ -515,7 +519,7 @@ def update_stats_for_event(s: Session, event_id: int):
     adult_price = price.adult_price if price else 0
     child_price = price.child_price if price else 0
 
-    # ✅ 신랑/신부 구분은 WeddingEvent 기준으로 join 해서 조회
+    # ✅ 신랑/신부 구분
     groom_records = (
         s.query(TicketStat)
         .join(WeddingEvent, WeddingEvent.id == TicketStat.event_id)
@@ -547,11 +551,11 @@ def update_stats_for_event(s: Session, event_id: int):
     bride_data = base()
 
     def group_by_device(device_code):
-        if device_code.startswith("D-A"):  # 부조석
+        if device_code.startswith("D-A"):
             return "booth"
-        elif device_code.startswith("D-R"):  # 식당
+        elif device_code.startswith("D-R"):
             return "restaurant"
-        elif device_code.startswith("D-G"):  # 답례품
+        elif device_code.startswith("D-G"):
             return "gift"
         return "unknown"
 
@@ -581,26 +585,21 @@ def update_stats_for_event(s: Session, event_id: int):
             bride_data["gift_adult"] += r.adult_count
             bride_data["gift_child"] += r.child_count
 
-    def compute_unused(d):
-        total_adult = d["adult"]
-        total_child = d["child"]
-        used_adult = d["restaurant_adult"] + d["gift_adult"]
-        used_child = d["restaurant_child"] + d["gift_child"]
-        return {
-            "unused_adult": max(total_adult - used_adult, 0),
-            "unused_child": max(total_child - used_child, 0),
-            "unused_total": max(
-                (total_adult + total_child) - (used_adult + used_child), 0
-            ),
-        }
-
-    groom_unused = compute_unused(groom_data)
-    bride_unused = compute_unused(bride_data)
-
+    # ✅ 금액 계산
     groom_price = (groom_data["adult"] * adult_price) + (groom_data["child"] * child_price)
     bride_price = (bride_data["adult"] * adult_price) + (bride_data["child"] * child_price)
 
+    # ✅ DB 반영 (가장 중요)
+    event.groom_adult_total = groom_data["adult"]
+    event.groom_child_total = groom_data["child"]
+    event.bride_adult_total = bride_data["adult"]
+    event.bride_child_total = bride_data["child"]
+    event.groom_total_price = groom_price
+    event.bride_total_price = bride_price
+
+    s.add(event)
     s.commit()
+
 
 
 
