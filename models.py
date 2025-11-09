@@ -31,12 +31,19 @@ class User(Base):
 class Device(Base):
     __tablename__ = "devices"
     id: Mapped[int] = mapped_column(primary_key=True)
-    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    tenant_id: Mapped[int] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), index=True
+    )
     device_code: Mapped[str] = mapped_column(String(32), index=True)      # D-A1 등
     activation_code: Mapped[str] = mapped_column(String(64), unique=True) # 출고시 제공
     active: Mapped[int] = mapped_column(Integer, default=0)               # 0/1
+
+    # ✅ 오늘 배치된 신랑/신부 구분용
+    side: Mapped[str | None] = mapped_column(String(16), nullable=True)   # "groom" or "bride"
+
     last_seen_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now())
-    __table_args__ = (UniqueConstraint("tenant_id","device_code", name="uq_device_per_tenant"),)
+    __table_args__ = (UniqueConstraint("tenant_id", "device_code", name="uq_device_per_tenant"),)
+
 
 class DeviceClaim(Base):
     __tablename__ = "device_claims"

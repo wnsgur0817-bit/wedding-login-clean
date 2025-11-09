@@ -333,6 +333,31 @@ def create_wedding_event(
     s.refresh(event)
     return event
 
+@app.post("/devices/assign_side")
+def assign_device_side(data: dict, s: Session = Depends(db), claims=Depends(require_auth)):
+    tenant_code = claims["tenant_code"]
+    device_code = data.get("device_code")
+    side = data.get("side")  # "groom" or "bride"
+
+    if not device_code or side not in ["groom", "bride"]:
+        raise HTTPException(400, "device_code and side are required")
+
+    tenant = s.scalars(select(Tenant).where(Tenant.code == tenant_code)).first()
+    if not tenant:
+        raise HTTPException(404, "tenant not found")
+
+    device = (
+        s.query(Device)
+        .filter(Device.tenant_id == tenant.id)
+        .filter(Device.device_code == device_code)
+        .first()
+    )
+    if not device:
+        raise HTTPException(404, "device not found")
+
+    device.side = side
+    s.commit()
+    return {"ok": True, "device_code": device_code, "side": side}
 
 
 @app.get("/wedding/event/list", response_model=list[WeddingEventOut])
@@ -413,7 +438,7 @@ def issue_ticket(data: dict, s: Session = Depends(db), claims=Depends(require_au
         if not tenant:
             raise HTTPException(404, "tenant not found")
 
-        event_id = data.get("event_id")  # ✅ event_id 기준으로 분리
+        event_id = data.get("event_id")
         event_title = data.get("event_title")
         hall_name = data.get("hall_name")
         ttype = data.get("type")
@@ -422,20 +447,28 @@ def issue_ticket(data: dict, s: Session = Depends(db), claims=Depends(require_au
         if not event_id:
             raise HTTPException(400, "event_id is required")
 
-        # ✅ event_id 기준으로 TicketStat을 찾음 (중복 예식 분리)
+        # ✅ 이 디바이스가 현재 어떤 side인지 확인
+        device = (
+            s.query(Device)
+            .filter(Device.tenant_id == tenant.id)
+            .filter(Device.device_code == device_code)
+            .first()
+        )
+        side = device.side if device and device.side in ["groom", "bride"] else None
+
+        # ✅ TicketStat 조회
         stat = (
             s.query(TicketStat)
             .filter(TicketStat.tenant_id == tenant.id)
-            .filter(TicketStat.event_id == event_id)  # ✅ 추가
+            .filter(TicketStat.event_id == event_id)
             .filter(TicketStat.device_code == device_code)
             .first()
         )
 
-        # ✅ 없으면 새로 생성
         if not stat:
             stat = TicketStat(
                 tenant_id=tenant.id,
-                event_id=event_id,  # ✅ 저장
+                event_id=event_id,
                 device_code=device_code,
                 hall_name=hall_name,
                 event_title=event_title,
@@ -444,7 +477,6 @@ def issue_ticket(data: dict, s: Session = Depends(db), claims=Depends(require_au
             )
             s.add(stat)
 
-        # ✅ 발급 수량 처리
         if ttype == "성인":
             stat.adult_count += count
         elif ttype == "어린이":
@@ -455,20 +487,18 @@ def issue_ticket(data: dict, s: Session = Depends(db), claims=Depends(require_au
         s.commit()
         s.refresh(stat)
 
-        # ✅ 해당 예식 통계 갱신
+        # ✅ 통계 업데이트 — side(신랑/신부) 기준으로 집계
         update_stats_for_event(s, event_id)
 
         return {
             "ok": True,
             "event_id": event_id,
+            "side": side,
             "adult_count": stat.adult_count,
             "child_count": stat.child_count,
         }
 
-    except HTTPException:
-        raise
     except Exception as e:
-        # ✅ 에러 로그를 콘솔에 출력 (Cloud Run/Render 로그에서 확인 가능)
         print("[ERROR] issue_ticket failed")
         traceback.print_exc()
         raise HTTPException(500, f"Server error: {e}")
@@ -517,7 +547,7 @@ def get_event_summary(event_id: int, s: Session = Depends(db), claims=Depends(re
 
 
 def update_stats_for_event(s: Session, event_id: int):
-    """예식별 통계 자동 집계"""
+    """예식별 통계 자동 집계 (Device.side 기준으로 신랑/신부 구분)"""
     event = s.query(WeddingEvent).filter(WeddingEvent.id == event_id).first()
     if not event:
         return
@@ -531,38 +561,34 @@ def update_stats_for_event(s: Session, event_id: int):
     adult_price = price.adult_price if price else 0
     child_price = price.child_price if price else 0
 
-    # ✅ 신랑/신부 구분
-    groom_records = (
-        s.query(TicketStat)
-        .join(WeddingEvent, WeddingEvent.id == TicketStat.event_id)
+    # ✅ TicketStat + Device 조인
+    records = (
+        s.query(TicketStat, Device)
+        .join(Device, Device.device_code == TicketStat.device_code)
         .filter(TicketStat.tenant_id == tenant.id)
-        .filter(WeddingEvent.id == event_id)
-        .filter(WeddingEvent.owner_type == "groom")
-        .all()
-    )
-    bride_records = (
-        s.query(TicketStat)
-        .join(WeddingEvent, WeddingEvent.id == TicketStat.event_id)
-        .filter(TicketStat.tenant_id == tenant.id)
-        .filter(WeddingEvent.id == event_id)
-        .filter(WeddingEvent.owner_type == "bride")
+        .filter(TicketStat.event_id == event_id)
         .all()
     )
 
-    def base():
-        return {
-            "adult": 0,
-            "child": 0,
-            "restaurant_adult": 0,
-            "restaurant_child": 0,
-            "gift_adult": 0,
-            "gift_child": 0,
-        }
+    # ✅ 누적 변수 초기화
+    groom_data = {
+        "adult": 0,
+        "child": 0,
+        "restaurant_adult": 0,
+        "restaurant_child": 0,
+        "gift_adult": 0,
+        "gift_child": 0,
+    }
+    bride_data = {
+        "adult": 0,
+        "child": 0,
+        "restaurant_adult": 0,
+        "restaurant_child": 0,
+        "gift_adult": 0,
+        "gift_child": 0,
+    }
 
-    groom_data = base()
-    bride_data = base()
-
-    def group_by_device(device_code):
+    def group_by_device(device_code: str):
         if device_code.startswith("D-A"):
             return "booth"
         elif device_code.startswith("D-R"):
@@ -571,37 +597,30 @@ def update_stats_for_event(s: Session, event_id: int):
             return "gift"
         return "unknown"
 
-    # ✅ 신랑
-    for r in groom_records:
-        category = group_by_device(r.device_code)
-        if category == "booth":
-            groom_data["adult"] += r.adult_count
-            groom_data["child"] += r.child_count
-        elif category == "restaurant":
-            groom_data["restaurant_adult"] += r.adult_count
-            groom_data["restaurant_child"] += r.child_count
-        elif category == "gift":
-            groom_data["gift_adult"] += r.adult_count
-            groom_data["gift_child"] += r.child_count
+    # ✅ 각 기록을 Device.side 기준으로 분류
+    for stat, device in records:
+        side = device.side or "unknown"
+        category = group_by_device(stat.device_code)
 
-    # ✅ 신부
-    for r in bride_records:
-        category = group_by_device(r.device_code)
+        target = groom_data if side == "groom" else bride_data if side == "bride" else None
+        if not target:
+            continue  # side 미지정 장비는 통계에서 제외
+
         if category == "booth":
-            bride_data["adult"] += r.adult_count
-            bride_data["child"] += r.child_count
+            target["adult"] += stat.adult_count
+            target["child"] += stat.child_count
         elif category == "restaurant":
-            bride_data["restaurant_adult"] += r.adult_count
-            bride_data["restaurant_child"] += r.child_count
+            target["restaurant_adult"] += stat.adult_count
+            target["restaurant_child"] += stat.child_count
         elif category == "gift":
-            bride_data["gift_adult"] += r.adult_count
-            bride_data["gift_child"] += r.child_count
+            target["gift_adult"] += stat.adult_count
+            target["gift_child"] += stat.child_count
 
     # ✅ 금액 계산
     groom_price = (groom_data["adult"] * adult_price) + (groom_data["child"] * child_price)
     bride_price = (bride_data["adult"] * adult_price) + (bride_data["child"] * child_price)
 
-    # ✅ DB 반영 (가장 중요)
+    # ✅ DB 반영
     event.groom_adult_total = groom_data["adult"]
     event.groom_child_total = groom_data["child"]
     event.bride_adult_total = bride_data["adult"]
@@ -611,6 +630,7 @@ def update_stats_for_event(s: Session, event_id: int):
 
     s.add(event)
     s.commit()
+
 
 
 
