@@ -447,15 +447,6 @@ def issue_ticket(data: dict, s: Session = Depends(db), claims=Depends(require_au
         if not event_id:
             raise HTTPException(400, "event_id is required")
 
-        # ✅ 이 디바이스가 현재 어떤 side인지 확인
-        device = (
-            s.query(Device)
-            .filter(Device.tenant_id == tenant.id)
-            .filter(Device.device_code == device_code)
-            .first()
-        )
-        side = device.side if device and device.side in ["groom", "bride"] else None
-
         # ✅ TicketStat 조회
         stat = (
             s.query(TicketStat)
@@ -477,6 +468,7 @@ def issue_ticket(data: dict, s: Session = Depends(db), claims=Depends(require_au
             )
             s.add(stat)
 
+        # ✅ 발급 수량 처리
         if ttype == "성인":
             stat.adult_count += count
         elif ttype == "어린이":
@@ -487,13 +479,12 @@ def issue_ticket(data: dict, s: Session = Depends(db), claims=Depends(require_au
         s.commit()
         s.refresh(stat)
 
-        # ✅ 통계 업데이트 — side(신랑/신부) 기준으로 집계
+        # ✅ 예식 통계 자동 업데이트
         update_stats_for_event(s, event_id)
 
         return {
             "ok": True,
             "event_id": event_id,
-            "side": side,
             "adult_count": stat.adult_count,
             "child_count": stat.child_count,
         }
