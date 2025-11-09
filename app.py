@@ -15,6 +15,9 @@ from schemas import (
 from auth import verify_pw, make_access_token, hash_pw, verify_access_token
 from manage_generate import seed_if_empty
 
+import traceback
+
+
 # ─────────────────────────────────────────────
 # DB
 DATABASE_URL = "postgresql+psycopg2://postgres:1q2w3e4R!@34.64.98.207:5432/wedding_db"
@@ -403,63 +406,72 @@ def delete_wedding_event(
 
 @app.post("/wedding/ticket/issue")
 def issue_ticket(data: dict, s: Session = Depends(db), claims=Depends(require_auth)):
-    tenant_code = claims["tenant_code"]
-    device_code = claims.get("device_code")
-    tenant = s.scalars(select(Tenant).where(Tenant.code == tenant_code)).first()
-    if not tenant:
-        raise HTTPException(404, "tenant not found")
+    try:
+        tenant_code = claims["tenant_code"]
+        device_code = claims.get("device_code")
+        tenant = s.scalars(select(Tenant).where(Tenant.code == tenant_code)).first()
+        if not tenant:
+            raise HTTPException(404, "tenant not found")
 
-    event_id = data.get("event_id")  # ✅ event_id 기준으로 분리
-    event_title = data.get("event_title")
-    hall_name = data.get("hall_name")
-    ttype = data.get("type")
-    count = int(data.get("count", 0))
+        event_id = data.get("event_id")  # ✅ event_id 기준으로 분리
+        event_title = data.get("event_title")
+        hall_name = data.get("hall_name")
+        ttype = data.get("type")
+        count = int(data.get("count", 0))
 
-    if not event_id:
-        raise HTTPException(400, "event_id is required")
+        if not event_id:
+            raise HTTPException(400, "event_id is required")
 
-    # ✅ event_id 기준으로 TicketStat을 찾음 (중복 예식 분리)
-    stat = (
-        s.query(TicketStat)
-        .filter(TicketStat.tenant_id == tenant.id)
-        .filter(TicketStat.event_id == event_id)  # ✅ 추가
-        .filter(TicketStat.device_code == device_code)
-        .first()
-    )
-
-    # ✅ 없으면 새로 생성
-    if not stat:
-        stat = TicketStat(
-            tenant_id=tenant.id,
-            event_id=event_id,  # ✅ 저장
-            device_code=device_code,
-            hall_name=hall_name,
-            event_title=event_title,
-            adult_count=0,
-            child_count=0,
+        # ✅ event_id 기준으로 TicketStat을 찾음 (중복 예식 분리)
+        stat = (
+            s.query(TicketStat)
+            .filter(TicketStat.tenant_id == tenant.id)
+            .filter(TicketStat.event_id == event_id)  # ✅ 추가
+            .filter(TicketStat.device_code == device_code)
+            .first()
         )
-        s.add(stat)
 
-    # ✅ 발급 수량 처리
-    if ttype == "성인":
-        stat.adult_count += count
-    elif ttype == "어린이":
-        stat.child_count += count
-    else:
-        raise HTTPException(400, f"Unknown ticket type: {ttype}")
+        # ✅ 없으면 새로 생성
+        if not stat:
+            stat = TicketStat(
+                tenant_id=tenant.id,
+                event_id=event_id,  # ✅ 저장
+                device_code=device_code,
+                hall_name=hall_name,
+                event_title=event_title,
+                adult_count=0,
+                child_count=0,
+            )
+            s.add(stat)
 
-    s.commit()
-    s.refresh(stat)
+        # ✅ 발급 수량 처리
+        if ttype == "성인":
+            stat.adult_count += count
+        elif ttype == "어린이":
+            stat.child_count += count
+        else:
+            raise HTTPException(400, f"Unknown ticket type: {ttype}")
 
-    # ✅ 해당 예식 통계 갱신
-    update_stats_for_event(s, event_id)
+        s.commit()
+        s.refresh(stat)
 
-    return {
-        "ok": True,
-        "event_id": event_id,
-        "adult_count": stat.adult_count,
-        "child_count": stat.child_count,
-    }
+        # ✅ 해당 예식 통계 갱신
+        update_stats_for_event(s, event_id)
+
+        return {
+            "ok": True,
+            "event_id": event_id,
+            "adult_count": stat.adult_count,
+            "child_count": stat.child_count,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        # ✅ 에러 로그를 콘솔에 출력 (Cloud Run/Render 로그에서 확인 가능)
+        print("[ERROR] issue_ticket failed")
+        traceback.print_exc()
+        raise HTTPException(500, f"Server error: {e}")
 
 
 @app.get("/wedding/ticket/event_summary/{event_id}")
