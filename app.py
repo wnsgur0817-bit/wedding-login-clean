@@ -20,7 +20,10 @@ import traceback
 
 # ─────────────────────────────────────────────
 # DB
-DATABASE_URL = "postgresql+psycopg2://postgres:1q2w3e4R!@34.64.98.207:5432/wedding_db"
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+if not DATABASE_URL:
+    raise Exception("❌ DATABASE_URL 환경변수가 설정되지 않았습니다.")
 engine = create_engine(DATABASE_URL, future=True)
 Base.metadata.create_all(engine)
 router = APIRouter(prefix="/wedding/ticket", tags=["wedding-ticket"])
