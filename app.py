@@ -541,7 +541,7 @@ def get_event_summary(event_id: int, s: Session = Depends(db), claims=Depends(re
 
 
 def update_stats_for_event(s: Session, event_id: int):
-    """예식별 통계 자동 집계 (홀 이름 + 예식시간 + 신랑/신부 이름 기준으로 묶음)"""
+    """예식별 통계 자동 집계 (홀 이름 + 예식시간 + 신랑/신부 이름 기준으로 묶음, Device.side 기준으로 구분)"""
     event = s.query(WeddingEvent).filter(WeddingEvent.id == event_id).first()
     if not event:
         return
@@ -557,7 +557,8 @@ def update_stats_for_event(s: Session, event_id: int):
 
     # ✅ 같은 홀 + 예식시간 + 신랑/신부 이름이 동일한 예식 그룹 전체 조회
     records = (
-        s.query(TicketStat, WeddingEvent)
+        s.query(TicketStat, Device, WeddingEvent)
+        .join(Device, Device.device_code == TicketStat.device_code)
         .join(WeddingEvent, WeddingEvent.id == TicketStat.event_id)
         .filter(TicketStat.tenant_id == tenant.id)
         .filter(WeddingEvent.hall_name == event.hall_name)
@@ -594,14 +595,14 @@ def update_stats_for_event(s: Session, event_id: int):
             return "gift"
         return "unknown"
 
-    # ✅ 각 기록을 WeddingEvent.owner_type 기준으로 분류
-    for stat, ev in records:
-        side = ev.owner_type or "unknown"  # 'groom' 또는 'bride'
+    # ✅ Device.side 기준으로 신랑/신부 분류
+    for stat, device, ev in records:
+        side = device.side or "unknown"  # ← 이제 여기서 결정됨
         category = group_by_device(stat.device_code)
 
         target = groom_data if side == "groom" else bride_data if side == "bride" else None
         if not target:
-            continue  # owner_type 미정이면 스킵
+            continue
 
         if category == "booth":
             target["adult"] += stat.adult_count
@@ -627,6 +628,7 @@ def update_stats_for_event(s: Session, event_id: int):
 
     s.add(event)
     s.commit()
+
 
 
 
