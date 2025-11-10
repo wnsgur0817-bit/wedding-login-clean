@@ -929,4 +929,6 @@ app.include_router(router)
 
 if __name__ == "__main__":
     import uvicorn
+    from manage_generate import seed_if_empty
+    seed_if_empty(engine)  # ✅ 초기 데이터 삽입
     uvicorn.run("app:app", host="0.0.0.0", port=8080)
