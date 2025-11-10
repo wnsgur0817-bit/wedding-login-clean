@@ -884,44 +884,77 @@ def scan_ticket(data: dict, db: Session = Depends(db), claims=Depends(require_au
 
 @router.get("/event_summary/{event_id}")
 def get_event_summary(event_id: int, db: Session = Depends(db)):
-    # ✅ 예식 존재 여부 확인
+    # ✅ 기준 예식 하나 가져오기
     event = db.query(WeddingEvent).filter(WeddingEvent.id == event_id).first()
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    # ✅ 해당 예식의 통계 데이터 가져오기
-    groom = db.query(TicketStat).filter(
-        TicketStat.event_id == event_id, TicketStat.side == "groom"
-    ).first()
-    bride = db.query(TicketStat).filter(
-        TicketStat.event_id == event_id, TicketStat.side == "bride"
-    ).first()
+    # ✅ 같은 홀 + 예식시간 + 신랑/신부 이름이 동일한 모든 예식 그룹 조회
+    grouped_events = db.query(WeddingEvent).filter(
+        WeddingEvent.tenant_id == event.tenant_id,
+        WeddingEvent.hall_name == event.hall_name,
+        WeddingEvent.event_date == event.event_date,
+        WeddingEvent.groom_name == event.groom_name,
+        WeddingEvent.bride_name == event.bride_name
+    ).all()
+    grouped_ids = [e.id for e in grouped_events]
 
-    # ✅ 데이터 기본값 처리
-    def safe(d):
-        return d if d else {
-            "adult": 0,
-            "child": 0,
-            "total_tickets": 0,
-            "price": 0,
-            "restaurant_adult": 0,
-            "restaurant_child": 0,
-            "gift_adult": 0,
-            "gift_child": 0,
-            "unused_adult": 0,
-            "unused_child": 0,
-            "unused_total": 0,
-            "grand_total": 0,
-        }
+    # ✅ TicketStat에서 해당 예식들 전체 통계 조회
+    stats = db.query(TicketStat).filter(TicketStat.event_id.in_(grouped_ids)).all()
 
-    groom_data = safe(groom.__dict__ if groom else None)
-    bride_data = safe(bride.__dict__ if bride else None)
+    # ✅ 누적값 초기화
+    groom_data = {
+        "adult": 0, "child": 0,
+        "restaurant_adult": 0, "restaurant_child": 0,
+        "gift_adult": 0, "gift_child": 0,
+        "unused_adult": 0, "unused_child": 0,
+        "unused_total": 0, "grand_total": 0,
+    }
+    bride_data = {
+        "adult": 0, "child": 0,
+        "restaurant_adult": 0, "restaurant_child": 0,
+        "gift_adult": 0, "gift_child": 0,
+        "unused_adult": 0, "unused_child": 0,
+        "unused_total": 0, "grand_total": 0,
+    }
+
+    # ✅ Device 정보 기준으로 신랑/신부 구분
+    from models import Device
+    for stat in stats:
+        device = db.query(Device).filter(Device.device_code == stat.device_code).first()
+        if not device:
+            continue
+
+        side = device.side or "unknown"
+        target = groom_data if side == "groom" else bride_data if side == "bride" else None
+        if not target:
+            continue
+
+        target["adult"] += stat.adult_count
+        target["child"] += stat.child_count
+        target["restaurant_adult"] += stat.restaurant_adult
+        target["restaurant_child"] += stat.restaurant_child
+        target["gift_adult"] += stat.gift_adult
+        target["gift_child"] += stat.gift_child
+        target["unused_adult"] += stat.unused_adult
+        target["unused_child"] += stat.unused_child
+        target["unused_total"] += stat.unused_total
+        target["grand_total"] += stat.grand_total
 
     totals = {
         "grand_total": groom_data["grand_total"] + bride_data["grand_total"],
     }
 
-    return {"groom": groom_data, "bride": bride_data, "totals": totals}
+    return {
+        "hall_name": event.hall_name,
+        "event_date": event.event_date,
+        "groom_name": event.groom_name,
+        "bride_name": event.bride_name,
+        "groom": groom_data,
+        "bride": bride_data,
+        "totals": totals,
+    }
+
 
 
 
