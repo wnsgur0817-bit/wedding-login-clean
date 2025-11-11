@@ -146,7 +146,7 @@ def seed_if_empty(engine):
 
         s.add(Device(tenant_id=t0.id, device_code=ADMIN_DEVICE_CODE, activation_code=gen_activation(), active=0))
         s.add(Device(tenant_id=t0.id, device_code="D-A1", activation_code=gen_activation(), active=0))
-
+        s.add(Device(tenant_id=t0.id, device_code="D-A2", activation_code=gen_activation(), active=0))
         # --- 실제 테넌트 T-0001: gen001~100, D-ADMIN + A1~C5 ---
         t1 = Tenant(code=TENANT_CODE, name=TENANT_NAME, pw_hash=hash_pw(PASSWORD))  # 이미 OK
         s.add(t1); s.flush()
