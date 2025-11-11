@@ -62,6 +62,17 @@ def seed():
             ))
             rows.append(["T-0000", "0", "0", "D-A1", act_a1_0])
 
+            # D-A2 (부조석)
+            act_a2_0 = gen_activation()
+            s.add(Device(
+                tenant_id=t0.id,
+                device_code="D-A2",
+                activation_code=act_a2_0,
+                active=0
+            ))
+            rows.append(["T-0000", "0", "0", "D-A2", act_a2_0])
+
+
         # ── 실제 예식장 테넌트 생성 ────────────────────────────────────────
 
         t1 = Tenant(code=TENANT_CODE, name=TENANT_NAME, pw_hash=hash_pw(PASSWORD))  # NEW
