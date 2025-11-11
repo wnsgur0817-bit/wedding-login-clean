@@ -405,12 +405,8 @@ def delete_multiple_wedding_events(
         raise HTTPException(400, "Invalid request body")
 
     tenant_code = claims["tenant_code"]
-    device_code = claims.get("device_code")
 
-    # ✅ 관리자 전용
-    if device_code != "D-ADMIN":
-        raise HTTPException(403, "Access denied: not admin device")
-
+    # ✅ 테넌트 확인 (기기 구분 없이 같은 테넌트면 삭제 가능)
     tenant = s.scalars(select(Tenant).where(Tenant.code == tenant_code)).first()
     if not tenant:
         raise HTTPException(404, "tenant not found")
@@ -425,12 +421,14 @@ def delete_multiple_wedding_events(
         if not event:
             continue
 
+        # ✅ 통계도 함께 삭제
         s.query(TicketStat).filter(TicketStat.event_id == eid).delete()
         s.delete(event)
         deleted_count += 1
 
     s.commit()
     return {"ok": True, "deleted_count": deleted_count}
+
 
 
 # ✅ 식권 발급 기록 및 누적 조회 -----------------------------
@@ -544,7 +542,10 @@ def get_event_summary(event_id: int, s: Session = Depends(db), claims=Depends(re
 
 
 def update_stats_for_event(s: Session, event_id: int):
-    """예식별 통계 자동 집계 (홀 이름 + 예식시간 + 신랑/신부 이름 기준으로 묶음, Device.side 기준으로 구분)"""
+    """
+    예식별 통계 자동 집계
+    (같은 홀 + 날짜 + 시간 + 신랑/신부 이름 기준으로 묶음, Device.side 기준으로 구분)
+    """
     event = s.query(WeddingEvent).filter(WeddingEvent.id == event_id).first()
     if not event:
         return
@@ -558,7 +559,7 @@ def update_stats_for_event(s: Session, event_id: int):
     adult_price = price.adult_price if price else 0
     child_price = price.child_price if price else 0
 
-    # ✅ 같은 홀 + 예식시간 + 신랑/신부 이름이 동일한 예식 그룹 전체 조회
+    # ✅ 같은 홀 + 날짜 + 시간 + 신랑/신부 이름 기준으로 예식 그룹 전체 조회
     records = (
         s.query(TicketStat, Device, WeddingEvent)
         .join(Device, Device.device_code == TicketStat.device_code)
@@ -566,6 +567,7 @@ def update_stats_for_event(s: Session, event_id: int):
         .filter(TicketStat.tenant_id == tenant.id)
         .filter(WeddingEvent.hall_name == event.hall_name)
         .filter(WeddingEvent.event_date == event.event_date)
+        .filter(WeddingEvent.start_time == event.start_time)  # ✅ 핵심 추가
         .filter(WeddingEvent.groom_name == event.groom_name)
         .filter(WeddingEvent.bride_name == event.bride_name)
         .all()
@@ -573,22 +575,17 @@ def update_stats_for_event(s: Session, event_id: int):
 
     # ✅ 누적 변수 초기화
     groom_data = {
-        "adult": 0,
-        "child": 0,
-        "restaurant_adult": 0,
-        "restaurant_child": 0,
-        "gift_adult": 0,
-        "gift_child": 0,
+        "adult": 0, "child": 0,
+        "restaurant_adult": 0, "restaurant_child": 0,
+        "gift_adult": 0, "gift_child": 0,
     }
     bride_data = {
-        "adult": 0,
-        "child": 0,
-        "restaurant_adult": 0,
-        "restaurant_child": 0,
-        "gift_adult": 0,
-        "gift_child": 0,
+        "adult": 0, "child": 0,
+        "restaurant_adult": 0, "restaurant_child": 0,
+        "gift_adult": 0, "gift_child": 0,
     }
 
+    # ✅ 기기 코드별 분류 함수
     def group_by_device(device_code: str):
         if device_code.startswith("D-A"):
             return "booth"
@@ -598,9 +595,9 @@ def update_stats_for_event(s: Session, event_id: int):
             return "gift"
         return "unknown"
 
-    # ✅ Device.side 기준으로 신랑/신부 분류
+    # ✅ 통계 누적 계산 (Device.side 기준)
     for stat, device, ev in records:
-        side = device.side or "unknown"  # ← 이제 여기서 결정됨
+        side = device.side or "unknown"
         category = group_by_device(stat.device_code)
 
         target = groom_data if side == "groom" else bride_data if side == "bride" else None
@@ -621,7 +618,7 @@ def update_stats_for_event(s: Session, event_id: int):
     groom_price = (groom_data["adult"] * adult_price) + (groom_data["child"] * child_price)
     bride_price = (bride_data["adult"] * adult_price) + (bride_data["child"] * child_price)
 
-    # ✅ DB 반영 (자동으로 합쳐진 결과를 한 예식에 기록)
+    # ✅ DB 반영 (같은 예식 그룹 중 하나에 누적 저장)
     event.groom_adult_total = groom_data["adult"]
     event.groom_child_total = groom_data["child"]
     event.bride_adult_total = bride_data["adult"]
@@ -631,6 +628,7 @@ def update_stats_for_event(s: Session, event_id: int):
 
     s.add(event)
     s.commit()
+
 
 
 
