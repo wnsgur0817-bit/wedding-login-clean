@@ -1,7 +1,7 @@
 ﻿# app.py#
 import os, re
 from datetime import datetime, timedelta
-from fastapi import FastAPI, HTTPException, Depends, Header,APIRouter
+from fastapi import FastAPI, HTTPException, Depends, Header,APIRouter, Body
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine, select
 from sqlalchemy.exc import IntegrityError
@@ -407,6 +407,7 @@ def delete_multiple_wedding_events(
     tenant_code = claims["tenant_code"]
     device_code = claims.get("device_code")
 
+    # ✅ 관리자 전용
     if device_code != "D-ADMIN":
         raise HTTPException(403, "Access denied: not admin device")
 
