@@ -374,25 +374,24 @@ def list_wedding_events(claims=Depends(require_auth), s: Session = Depends(db)):
 
     q = s.query(WeddingEvent).filter(WeddingEvent.tenant_id == tenant.id)
 
-    # ✅ 부조석은 자기 디바이스만
-    if device_code != "D-ADMIN":
+    # ✅ 부조석 기기는 자기 디바이스 데이터만 보게 유지
+    if device_code and device_code != "D-ADMIN":
         q = q.filter(WeddingEvent.device_code == device_code)
 
-    events = q.order_by(WeddingEvent.event_date.desc(), WeddingEvent.start_time.asc()).all()
+    events = q.order_by(
+        WeddingEvent.event_date.desc(),
+        WeddingEvent.start_time.asc()
+    ).all()
 
-    # ✅ 관리자일 경우 중복 예식 묶기
-    if device_code == "D-ADMIN":
-        merged = {}
-        for e in events:
-            key = (e.hall_name, e.event_date, e.start_time, e.groom_name, e.bride_name)
-            if key not in merged:
-                merged[key] = e
-            else:
-                # 신랑/신부 조합이 이미 존재하면 생략 (중복 제거 효과)
-                continue
-        events = list(merged.values())
+    # ✅ 디바이스 종류와 상관없이, 동일한 예식(홀+날짜+시간+신랑/신부 이름)은 1개로 묶기
+    merged = {}
+    for e in events:
+        key = (e.hall_name, e.event_date, e.start_time, e.groom_name, e.bride_name)
+        if key not in merged:
+            merged[key] = e
+        # 이미 있으면 그냥 건너뜀 (중복 제거)
 
-    return events
+    return list(merged.values())
 
 @app.post("/wedding/event/bulk_delete")
 def delete_multiple_wedding_events(
