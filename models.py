@@ -1,6 +1,6 @@
 ﻿#models.py
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship,declarative_base
-from sqlalchemy import String, Integer, ForeignKey, UniqueConstraint, DateTime, func,Column
+from sqlalchemy import String, Integer, ForeignKey, UniqueConstraint, DateTime, func,Column,Date
 from datetime import datetime, date, time
 
 Base = declarative_base()
@@ -68,7 +68,7 @@ class WeddingEvent(Base):
 
     hall_name: Mapped[str] = mapped_column(String(20), nullable=False)  # ✅ 추가
 
-    event_date: Mapped[date] = mapped_column(DateTime)
+    event_date: Mapped[date] = mapped_column(Date)
     start_time: Mapped[str] = mapped_column(String(8))
     title: Mapped[str] = mapped_column(String(100))
     groom_name: Mapped[str] = mapped_column(String(50))

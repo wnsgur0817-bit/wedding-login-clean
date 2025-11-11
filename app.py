@@ -311,19 +311,20 @@ def create_wedding_event(
 ):
     tenant_code = claims["tenant_code"]
     device_code = claims.get("device_code")
+
     tenant = s.scalars(select(Tenant).where(Tenant.code == tenant_code)).first()
     if not tenant:
         raise HTTPException(404, "tenant not found")
 
-    hall_name = (data.hall_name or "").strip()
-    if not hall_name:
+    if not data.hall_name:
         raise HTTPException(400, "hall_name required")
+
     event = WeddingEvent(
-        tenant_id=tenant.id,
-        device_code=device_code,
-        owner_type=data.owner_type,
-        hall_name=data.hall_name,  # ✅ 추가
-        event_date=data.event_date,
+        tenant_id=tenant.id,          # ✅ DB의 정수 ID로 저장
+        device_code=device_code,      # ✅ 부조석/관리자 구분용
+        owner_type=data.owner_type,   # ✅ 신랑/신부 구분
+        hall_name=data.hall_name.strip(),
+        event_date=data.event_date,   # ✅ date 타입 그대로
         start_time=data.start_time,
         title=data.title,
         groom_name=data.groom_name,
@@ -331,10 +332,12 @@ def create_wedding_event(
         child_min_age=data.child_min_age or 0,
         child_max_age=data.child_max_age or 0,
     )
+
     s.add(event)
     s.commit()
     s.refresh(event)
     return event
+
 
 @app.post("/devices/assign_side")
 def assign_device_side(data: dict, s: Session = Depends(db), claims=Depends(require_auth)):
