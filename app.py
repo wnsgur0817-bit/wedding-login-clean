@@ -394,9 +394,9 @@ def list_wedding_events(claims=Depends(require_auth), s: Session = Depends(db)):
 
     return events
 
-@app.delete("/wedding/event/{event_id}")
-def delete_wedding_event(
-    event_id: int,
+@app.delete("/wedding/event/bulk")
+def delete_multiple_wedding_events(
+    event_ids: list[int] = Body(..., embed=True),
     claims=Depends(require_auth),
     s: Session = Depends(db)
 ):
@@ -411,23 +411,25 @@ def delete_wedding_event(
     if not tenant:
         raise HTTPException(404, "tenant not found")
 
-    event = (
-        s.query(WeddingEvent)
-        .filter(WeddingEvent.tenant_id == tenant.id)
-        .filter(WeddingEvent.id == event_id)
-        .first()
-    )
-    if not event:
-        raise HTTPException(404, "event not found")
+    deleted_count = 0
+    for eid in event_ids:
+        event = (
+            s.query(WeddingEvent)
+            .filter(WeddingEvent.tenant_id == tenant.id, WeddingEvent.id == eid)
+            .first()
+        )
+        if not event:
+            continue
 
-    # ✅ 관련 통계 데이터(식권 발급 내역 포함) 모두 삭제
-    s.query(TicketStat).filter(TicketStat.event_id == event_id).delete()
+        # ✅ 통계 삭제
+        s.query(TicketStat).filter(TicketStat.event_id == eid).delete()
 
-    # ✅ 예식 자체 삭제
-    s.delete(event)
+        # ✅ 예식 삭제
+        s.delete(event)
+        deleted_count += 1
+
     s.commit()
-
-    return {"ok": True, "deleted_id": event_id}
+    return {"ok": True, "deleted_count": deleted_count}
 
 
 # ✅ 식권 발급 기록 및 누적 조회 -----------------------------
