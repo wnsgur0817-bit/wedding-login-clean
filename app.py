@@ -394,16 +394,19 @@ def list_wedding_events(claims=Depends(require_auth), s: Session = Depends(db)):
 
     return events
 
-@app.delete("/wedding/event/bulk")
+@app.post("/wedding/event/bulk_delete")
 def delete_multiple_wedding_events(
-    event_ids: list[int] = Body(..., embed=True),
+    body: dict = Body(...),
     claims=Depends(require_auth),
     s: Session = Depends(db)
 ):
+    event_ids = body.get("event_ids", [])
+    if not isinstance(event_ids, list):
+        raise HTTPException(400, "Invalid request body")
+
     tenant_code = claims["tenant_code"]
     device_code = claims.get("device_code")
 
-    # ✅ 관리자 전용 보호
     if device_code != "D-ADMIN":
         raise HTTPException(403, "Access denied: not admin device")
 
@@ -421,10 +424,7 @@ def delete_multiple_wedding_events(
         if not event:
             continue
 
-        # ✅ 통계 삭제
         s.query(TicketStat).filter(TicketStat.event_id == eid).delete()
-
-        # ✅ 예식 삭제
         s.delete(event)
         deleted_count += 1
 
