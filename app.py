@@ -895,6 +895,7 @@ def get_event_summary(event_id: int, db: Session = Depends(db)):
         WeddingEvent.tenant_id == event.tenant_id,
         WeddingEvent.hall_name == event.hall_name,
         WeddingEvent.event_date == event.event_date,
+        WeddingEvent.start_time == event.start_time,
         WeddingEvent.groom_name == event.groom_name,
         WeddingEvent.bride_name == event.bride_name
     ).all()
