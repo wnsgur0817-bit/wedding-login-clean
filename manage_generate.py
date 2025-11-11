@@ -16,7 +16,7 @@ PASSWORD = "0"
 HALLS = ["A", "B", "C"]
 BOOTHS_PER_HALL = 5          # 3 * 5 = 15개
 ADMIN_DEVICE_CODE = "D-ADMIN"
-USER_COUNT = 100             # gen001 ~ gen100
+USER_COUNT = 999           # gen001 ~ gen100
 INCLUDE_TEST_T0000 = True    # 테스트 테넌트(T-0000) 포함 여부
 
 def reset_db():
