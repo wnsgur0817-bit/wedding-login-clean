@@ -304,35 +304,29 @@ def heartbeat(body: ClaimReq, s: Session = Depends(db)):
 
 
 @app.post("/wedding/event", response_model=WeddingEventOut)
-def create_wedding_event(
-    data: WeddingEventIn,
-    claims=Depends(require_auth),
-    s: Session = Depends(db)
-):
+def create_wedding_event(data: WeddingEventIn, claims=Depends(require_auth), s: Session = Depends(db)):
     tenant_code = claims["tenant_code"]
     device_code = claims.get("device_code")
 
     tenant = s.scalars(select(Tenant).where(Tenant.code == tenant_code)).first()
     if not tenant:
         raise HTTPException(404, "tenant not found")
-
     if not data.hall_name:
         raise HTTPException(400, "hall_name required")
 
     event = WeddingEvent(
-        tenant_id=tenant.id,          # ✅ DB의 정수 ID로 저장
-        device_code=device_code,      # ✅ 부조석/관리자 구분용
-        owner_type=data.owner_type,   # ✅ 신랑/신부 구분
-        hall_name=data.hall_name.strip(),
-        event_date=datetime.now(KST).date(),   # ✅ date 타입 그대로
-        start_time=data.start_time,
-        title=data.title,
-        groom_name=data.groom_name,
-        bride_name=data.bride_name,
+        tenant_id=tenant.id,
+        device_code=device_code,
+        owner_type=data.owner_type,
+        hall_name=(data.hall_name or "").strip(),
+        event_date=datetime.now(KST).date(),
+        start_time=(data.start_time or "").strip(),     # ✅
+        title=(data.title or "").strip(),               # ✅ (선택)
+        groom_name=(data.groom_name or "").strip(),     # ✅
+        bride_name=(data.bride_name or "").strip(),     # ✅
         child_min_age=data.child_min_age or 0,
         child_max_age=data.child_max_age or 0,
     )
-
     s.add(event)
     s.commit()
     s.refresh(event)
@@ -377,7 +371,7 @@ def list_wedding_events(claims=Depends(require_auth), s: Session = Depends(db)):
 
     q = s.query(WeddingEvent).filter(WeddingEvent.tenant_id == tenant.id)
 
-    # ✅ 부조석 기기는 자기 디바이스 데이터만 보게 유지
+    # 부조석은 자기 디바이스 것만, 관리자면 전체
     if device_code and device_code != "D-ADMIN":
         q = q.filter(WeddingEvent.device_code == device_code)
 
@@ -386,14 +380,24 @@ def list_wedding_events(claims=Depends(require_auth), s: Session = Depends(db)):
         WeddingEvent.start_time.asc()
     ).all()
 
-    # ✅ 디바이스 종류와 상관없이, 동일한 예식(홀+날짜+시간+신랑/신부 이름)은 1개로 묶기
+    # ✅ 관리자: owner_type 제외하고 묶기 / 부조석: 기존대로 유지
     dedup = {}
     for e in events:
-        key = (e.hall_name, e.event_date, e.start_time, e.groom_name, e.bride_name, e.owner_type)
+        hall = (e.hall_name or "").strip().lower()
+        time_ = (e.start_time or "").strip()
+        groom = (e.groom_name or "").strip().lower()
+        bride = (e.bride_name or "").strip().lower()
+
+        # ✅ 관리자만 묶기
+        if device_code == "D-ADMIN":
+            key = (hall, e.event_date, time_, groom, bride)
+        else:
+            key = (hall, e.event_date, time_, groom, bride, e.device_code)
+
         if key not in dedup:
             dedup[key] = e
+
     return list(dedup.values())
-        # 이미 있으면 그냥 건너뜀 (중복 제거)
 
 
 
