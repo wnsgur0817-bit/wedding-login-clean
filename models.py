@@ -77,11 +77,18 @@ class WeddingEvent(Base):
     child_max_age: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+    groom_adult_total: Mapped[int] = mapped_column(Integer, default=0)
+    groom_child_total: Mapped[int] = mapped_column(Integer, default=0)
+    bride_adult_total: Mapped[int] = mapped_column(Integer, default=0)
+    bride_child_total: Mapped[int] = mapped_column(Integer, default=0)
+    groom_total_price: Mapped[int] = mapped_column(Integer, default=0)
+    bride_total_price: Mapped[int] = mapped_column(Integer, default=0)
 
     # ✅ 신랑/신부 각각 별도 저장 가능하도록 제약 추가
     __table_args__ = (
         UniqueConstraint(
             "tenant_id",
+            "device_code",
             "hall_name",
             "event_date",
             "start_time",
@@ -101,7 +108,14 @@ class TicketStat(Base):
     event_title = Column(String, nullable=False)
     hall_name = Column(String, nullable=True)
     adult_count = Column(Integer, default=0, nullable=False)
-    child_count = Column(Integer, default=0, nullable=False)
+    restaurant_adult = Column(Integer, default=0, nullable=False)
+    restaurant_child = Column(Integer, default=0, nullable=False)
+    gift_adult = Column(Integer, default=0, nullable=False)
+    gift_child = Column(Integer, default=0, nullable=False)
+    unused_adult = Column(Integer, default=0, nullable=False)
+    unused_child = Column(Integer, default=0, nullable=False)
+    unused_total = Column(Integer, default=0, nullable=False)
+    grand_total = Column(Integer, default=0, nullable=False)
 
 class TicketPrice(Base):
     __tablename__ = "ticket_prices"

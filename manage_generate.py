@@ -121,7 +121,7 @@ def seed():
 
     print("✅ seed_output.csv 생성 완료!")
     if INCLUDE_TEST_T0000:
-        print("   └ 테스트 T-0000 포함: ID=0/PW=0, 기기 D-ADMIN + D-A1")
+        print("   └ 테스트 T-0000 포함: ID=0/PW=0, 기기 D-ADMIN + D-A1 + D-A2")
     print(f"   └ 예식장 코드: {TENANT_CODE}")
     print(f"   └ 생성된 계정 수: {USER_COUNT}")
     print(f"   └ 기기 수(T-0001): {1 + len(HALLS)*BOOTHS_PER_HALL} (관리자 1 + 부조석 15)")
