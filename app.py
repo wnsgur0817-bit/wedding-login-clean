@@ -53,14 +53,16 @@ def _maybe_seed():
 
 # ─────────────────────────────────────────────
 # 인증 의존성 (비번 변경 시 즉시 401)
-def require_auth(authorization: str = Header(None), s: Session = Depends(db)):
+def require_auth(
+    authorization: str = Header(None),
+    x_device_code: str | None = Header(None),   # ✅ 추가
+    s: Session = Depends(db)
+):
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(401, "missing bearer token")
 
     token = authorization.split(" ", 1)[1]
-
-    # auth.py 에서 토큰 검증 + tenant/token_version 체크까지 이미 함
-    payload = verify_access_token(token, s)  # payload 안에는 tenant_id, tv 가 들어있음
+    payload = verify_access_token(token, s)
 
     tenant_code = payload.get("tenant_id")
     tv = payload.get("tv")
@@ -68,12 +70,14 @@ def require_auth(authorization: str = Header(None), s: Session = Depends(db)):
     if not tenant_code or tv is None:
         raise HTTPException(401, "invalid claims")
 
-    # 나머지 코드에서 편하게 쓰라고 키 이름을 통일해서 리턴
-    # (기존 코드와 호환되도록 alias 추가)
+    # ✅ 헤더에 X-Device-Code가 있으면 그것을 우선 사용
+    device_code = x_device_code or payload.get("device_code", "unknown")
+
     return {
         **payload,
         "tenant_code": tenant_code,
         "token_version": tv,
+        "device_code": device_code,  # ✅ 항상 최신 디바이스 코드 반영
     }
 
 # ─────────────────────────────────────────────
@@ -117,7 +121,7 @@ def login(body: LoginReq, s: Session = Depends(db)):
         tv = tenant.token_version or 1
 
         # ✅ device_code를 클라이언트에서 받은 값으로 사용
-        device_code = getattr(body, "device_code", "unknown")
+        device_code = getattr(body, "device_code", "D-ADMIN")
 
         token = make_access_token(
             sub=str(user.id),
