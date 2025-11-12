@@ -395,45 +395,72 @@ def list_wedding_events(claims=Depends(require_auth), s: Session = Depends(db)):
     return list(dedup.values())
         # 이미 있으면 그냥 건너뜀 (중복 제거)
 
-
+        ###관라자 페이지 선택삭제
 @app.post("/wedding/event/bulk_delete")
 def delete_multiple_wedding_events(
     body: dict = Body(...),
     claims=Depends(require_auth),
     s: Session = Depends(db)
 ):
-    event_ids = body.get("event_ids", [])
-    if not isinstance(event_ids, list):
-        raise HTTPException(400, "Invalid request body")
+    try:
+        event_ids = body.get("event_ids", [])
+        if not isinstance(event_ids, list):
+            raise HTTPException(400, "Invalid request body")
 
-    tenant_code = claims["tenant_code"]
+        tenant_code = claims["tenant_code"]
+        tenant = s.scalars(select(Tenant).where(Tenant.code == tenant_code)).first()
+        if not tenant:
+            raise HTTPException(404, "tenant not found")
 
-    # ✅ 테넌트 확인 (기기 구분 없이 같은 테넌트면 삭제 가능)
-    tenant = s.scalars(select(Tenant).where(Tenant.code == tenant_code)).first()
-    if not tenant:
-        raise HTTPException(404, "tenant not found")
+        deleted_count = 0
+        for eid in event_ids:
+            event = (
+                s.query(WeddingEvent)
+                .filter(WeddingEvent.tenant_id == tenant.id, WeddingEvent.id == eid)
+                .first()
+            )
+            if not event:
+                continue
 
-    deleted_count = 0
-    for eid in event_ids:
-        event = (
+            s.query(TicketStat).filter(TicketStat.event_id == eid).delete()
+            s.delete(event)
+            deleted_count += 1
+
+        s.commit()
+
+        # ✅ 최신 데이터 포함 응답
+        remaining = (
             s.query(WeddingEvent)
-            .filter(WeddingEvent.tenant_id == tenant.id, WeddingEvent.id == eid)
-            .first()
+            .filter(WeddingEvent.tenant_id == tenant.id)
+            .order_by(WeddingEvent.event_date.desc())
+            .all()
         )
-        if not event:
-            continue
 
-        # ✅ 통계도 함께 삭제
-        s.query(TicketStat).filter(TicketStat.event_id == eid).delete()
-        s.delete(event)
-        deleted_count += 1
+        return {
+            "ok": True,
+            "deleted_count": deleted_count,
+            "events": [
+                {
+                    "id": e.id,
+                    "hall_name": e.hall_name,
+                    "event_date": e.event_date,
+                    "start_time": e.start_time,
+                    "title": e.title,
+                    "groom_name": e.groom_name,
+                    "bride_name": e.bride_name,
+                }
+                for e in remaining
+            ],
+        }
 
-    s.commit()
-    return {"ok": True, "deleted_count": deleted_count}
+    except Exception as e:
+        s.rollback()
+        raise HTTPException(status_code=500, detail=f"Delete failed: {str(e)}")
 
 
 
-# ✅ 식권 발급 기록 및 누적 조회 -----------------------------
+
+# ✅ 식권 발급 기록 및 누적 조회 “관리자 집계 자동 반영 로직”
 
 @app.post("/wedding/ticket/issue")
 def issue_ticket(data: dict, s: Session = Depends(db), claims=Depends(require_auth)):
@@ -501,48 +528,12 @@ def issue_ticket(data: dict, s: Session = Depends(db), claims=Depends(require_au
         raise HTTPException(500, f"Server error: {e}")
 
 
-@app.get("/wedding/ticket/event_summary/{event_id}")
-def get_event_summary(event_id: int, s: Session = Depends(db), claims=Depends(require_auth)):
-    event = s.query(WeddingEvent).filter(WeddingEvent.id == event_id).first()
-    if not event:
-        raise HTTPException(status_code=404, detail="Event not found")
-
-    # ✅ join 을 추가해서 신랑/신부 데이터를 정확히 구분
-    groom_stats = (
-        s.query(TicketStat)
-        .join(WeddingEvent, WeddingEvent.id == TicketStat.event_id)
-        .filter(TicketStat.event_id == event_id)
-        .filter(WeddingEvent.owner_type == "groom")
-        .all()
-    )
-    bride_stats = (
-        s.query(TicketStat)
-        .join(WeddingEvent, WeddingEvent.id == TicketStat.event_id)
-        .filter(TicketStat.event_id == event_id)
-        .filter(WeddingEvent.owner_type == "bride")
-        .all()
-    )
-
-    return {
-        "event": {
-            "title": event.title,
-            "hall_name": event.hall_name,
-            "date": event.event_date,
-        },
-        "groom": {
-            "adult": sum(s_.adult_count for s_ in groom_stats),
-            "child": sum(s_.child_count for s_ in groom_stats),
-        },
-        "bride": {
-            "adult": sum(s_.adult_count for s_ in bride_stats),
-            "child": sum(s_.child_count for s_ in bride_stats),
-        },
-    }
 
 
 
 
 
+    ##관리자 통계창이 항상 최신 상태로 갱신되게 만드는 핵심 로직
 def update_stats_for_event(s: Session, event_id: int):
     """
     예식별 통계 자동 집계
@@ -639,7 +630,7 @@ def update_stats_for_event(s: Session, event_id: int):
 
 
 
-
+    ##관리자 페이지 통계 “예식별 한 줄 요약 리스트”
 @app.get("/wedding/ticket/admin_summary")
 def get_admin_summary(s: Session = Depends(db), claims=Depends(require_auth)):
     tenant_code = claims["tenant_code"]
@@ -668,7 +659,9 @@ def get_admin_summary(s: Session = Depends(db), claims=Depends(require_auth)):
     # ✅ 예식별 합산 구조 (신랑/신부 통합)
     summary = {}
     for st, ev in stats:
-        key = (ev.hall_name, ev.event_date, ev.start_time, ev.title)
+        # 🔑 홀, 날짜, 시간, 신랑/신부 이름이 모두 같을 때만 묶임
+        key = (ev.hall_name, ev.event_date, ev.start_time, ev.groom_name, ev.bride_name)
+
         if key not in summary:
             summary[key] = {
                 "hall": ev.hall_name,
@@ -679,10 +672,11 @@ def get_admin_summary(s: Session = Depends(db), claims=Depends(require_auth)):
                 "bride_name": ev.bride_name,
                 "groom_adult": 0, "groom_child": 0,
                 "bride_adult": 0, "bride_child": 0,
-                "adult_price": adult_price,  # ✅ 가격도 표시
+                "adult_price": adult_price,
                 "child_price": child_price,
             }
 
+        # ✅ 신랑/신부별로 각각 누적
         if ev.owner_type == "groom":
             summary[key]["groom_adult"] += st.adult_count
             summary[key]["groom_child"] += st.child_count
@@ -693,12 +687,12 @@ def get_admin_summary(s: Session = Depends(db), claims=Depends(require_auth)):
     # ✅ 금액 계산 포함
     result = []
     for v in summary.values():
-        groom_total = (v["groom_adult"] * adult_price) + (v["groom_child"] * child_price)
-        bride_total = (v["bride_adult"] * adult_price) + (v["bride_child"] * child_price)
+        groom_total = (v["groom_adult"] * v["adult_price"]) + (v["groom_child"] * v["child_price"])
+        bride_total = (v["bride_adult"] * v["adult_price"]) + (v["bride_child"] * v["child_price"])
 
         v["total_adult"] = v["groom_adult"] + v["bride_adult"]
         v["total_child"] = v["groom_child"] + v["bride_child"]
-        v["total_tickets"] = v["total_adult"] + v["total_child"]  # ✅ 총 식권 수 계산 추가
+        v["total_tickets"] = v["total_adult"] + v["total_child"]
         v["groom_total"] = groom_total
         v["bride_total"] = bride_total
         v["total_sum"] = groom_total + bride_total
@@ -710,6 +704,7 @@ def get_admin_summary(s: Session = Depends(db), claims=Depends(require_auth)):
 
 
 
+    ##숫자 합계용 API
 @app.get("/wedding/ticket/stats")
 def get_ticket_stats(s: Session = Depends(db), claims=Depends(require_auth)):
     tenant_code = claims["tenant_code"]
@@ -826,6 +821,8 @@ def get_ticket_price(s: Session = Depends(db), claims=Depends(require_auth)):
         return {"adult_price": 0, "child_price": 0}
     return {"adult_price": price.adult_price, "child_price": price.child_price}
 
+
+
 @app.post("/wedding/ticket/scan")
 def scan_ticket(data: dict, db: Session = Depends(db), claims=Depends(require_auth)):
     """
@@ -885,6 +882,9 @@ def scan_ticket(data: dict, db: Session = Depends(db), claims=Depends(require_au
     return {"ok": True, "device_code": device_code, "updated": True}
 
 
+
+
+    ##“그 예식 하나의 자세한 내역”
 @router.get("/event_summary/{event_id}")
 def get_event_summary(event_id: int, db: Session = Depends(db)):
     # ✅ 기준 예식 하나 가져오기
