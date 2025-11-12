@@ -374,10 +374,9 @@ def list_wedding_events(claims=Depends(require_auth), s: Session = Depends(db)):
     if not tenant:
         raise HTTPException(404, "tenant not found")
 
-    # 기본 쿼리
     q = s.query(WeddingEvent).filter(WeddingEvent.tenant_id == tenant.id)
 
-    # ✅ 부조석은 자기 디바이스 데이터만
+    # ✅ 부조석이면 자기 디바이스만, 관리자는 전체
     if device_code and device_code != "D-ADMIN":
         q = q.filter(WeddingEvent.device_code == device_code)
 
@@ -387,22 +386,7 @@ def list_wedding_events(claims=Depends(require_auth), s: Session = Depends(db)):
         WeddingEvent.hall_name.asc()
     ).all()
 
-    # ✅ 관리자면 "같은 홀/날짜/시간/신랑/신부 이름" 기준으로 묶기
-    # ✅ 부조석이면 묶지 않음 (항상 자기 데이터만)
-    if device_code == "D-ADMIN":
-        dedup = {}
-        for e in events:
-            key = (
-                (e.hall_name or "").strip(),
-                e.event_date,
-                (e.start_time or "").strip(),
-                (e.groom_name or "").strip(),
-                (e.bride_name or "").strip(),
-            )
-            if key not in dedup:
-                dedup[key] = e
-        events = list(dedup.values())
-
+    # ✅ 부조석: 그대로 / 관리자: 묶지 않음(여기선 안 함)
     return events
 
 
@@ -490,7 +474,7 @@ def get_event_summary(event_id: int, s: Session = Depends(db), claims=Depends(re
     if not base_event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    # ✅ 관리자면 같은 예식끼리 전부 묶기
+    # ✅ 관리자면 같은 조건으로 묶기
     if device_code == "D-ADMIN":
         related_events = (
             s.query(WeddingEvent)
@@ -502,29 +486,71 @@ def get_event_summary(event_id: int, s: Session = Depends(db), claims=Depends(re
             .filter(WeddingEvent.bride_name == base_event.bride_name)
             .all()
         )
-        event_ids = [e.id for e in related_events]
     else:
-        # ✅ 부조석은 자기 이벤트만
-        event_ids = [event_id]
+        # ✅ 부조석이면 자기 디바이스 예식만
+        related_events = (
+            s.query(WeddingEvent)
+            .filter(WeddingEvent.tenant_id == tenant.id)
+            .filter(WeddingEvent.device_code == device_code)
+            .filter(WeddingEvent.hall_name == base_event.hall_name)
+            .filter(WeddingEvent.event_date == base_event.event_date)
+            .filter(WeddingEvent.start_time == base_event.start_time)
+            .filter(WeddingEvent.groom_name == base_event.groom_name)
+            .filter(WeddingEvent.bride_name == base_event.bride_name)
+            .all()
+        )
 
-    # ✅ 신랑 / 신부 통계 분리
-    groom_stats = (
-        s.query(TicketStat)
-        .join(WeddingEvent, WeddingEvent.id == TicketStat.event_id)
+    event_ids = [e.id for e in related_events]
+
+    # ✅ 신랑/신부별 누적용 딕셔너리
+    def init_stat():
+        return {
+            "adult": 0,
+            "child": 0,
+            "restaurant_adult": 0,
+            "restaurant_child": 0,
+            "gift_adult": 0,
+            "gift_child": 0,
+            "unused_adult": 0,
+            "unused_child": 0,
+            "unused_total": 0,
+            "grand_total": 0,
+        }
+
+    groom_data = init_stat()
+    bride_data = init_stat()
+
+    # ✅ TicketStat + Device join (side 확인)
+    records = (
+        s.query(TicketStat, Device)
+        .join(Device, Device.device_code == TicketStat.device_code)
         .filter(TicketStat.event_id.in_(event_ids))
-        .filter(WeddingEvent.owner_type == "groom")
         .all()
     )
 
-    bride_stats = (
-        s.query(TicketStat)
-        .join(WeddingEvent, WeddingEvent.id == TicketStat.event_id)
-        .filter(TicketStat.event_id.in_(event_ids))
-        .filter(WeddingEvent.owner_type == "bride")
-        .all()
-    )
+    for stat, device in records:
+        side = device.side or "unknown"
+        target = groom_data if side == "groom" else bride_data if side == "bride" else None
+        if not target:
+            continue
 
-    # ✅ 총합 계산
+        target["adult"] += stat.adult_count
+        target["child"] += stat.child_count
+        target["restaurant_adult"] += getattr(stat, "restaurant_adult", 0)
+        target["restaurant_child"] += getattr(stat, "restaurant_child", 0)
+        target["gift_adult"] += getattr(stat, "gift_adult", 0)
+        target["gift_child"] += getattr(stat, "gift_child", 0)
+        target["unused_adult"] += getattr(stat, "unused_adult", 0)
+        target["unused_child"] += getattr(stat, "unused_child", 0)
+        target["unused_total"] += getattr(stat, "unused_total", 0)
+        target["grand_total"] += getattr(stat, "grand_total", 0)
+
+    # ✅ 전체 총합 계산
+    totals = {
+        "grand_total": groom_data["grand_total"] + bride_data["grand_total"],
+    }
+
+    # ✅ 응답
     return {
         "event": {
             "title": base_event.title,
@@ -534,21 +560,17 @@ def get_event_summary(event_id: int, s: Session = Depends(db), claims=Depends(re
             "groom_name": base_event.groom_name,
             "bride_name": base_event.bride_name,
         },
-        "groom": {
-            "adult": sum(s_.adult_count for s_ in groom_stats),
-            "child": sum(s_.child_count for s_ in groom_stats),
-        },
-        "bride": {
-            "adult": sum(s_.adult_count for s_ in bride_stats),
-            "child": sum(s_.child_count for s_ in bride_stats),
-        },
+        "groom": groom_data,
+        "bride": bride_data,
+        "totals": totals,
         "related_device_count": len(set(
             s.query(WeddingEvent.device_code)
             .filter(WeddingEvent.id.in_(event_ids))
             .distinct()
             .all()
-        )),  # ✅ 관리자일 때 몇 개 디바이스에서 나온 데이터인지도 확인 가능
+        )),
     }
+
 
 
 
@@ -726,22 +748,18 @@ def update_stats_for_event(s: Session, event_id: int):
 @app.get("/wedding/ticket/admin_summary")
 def get_admin_summary(s: Session = Depends(db), claims=Depends(require_auth)):
     tenant_code = claims["tenant_code"]
-    device_code = claims.get("device_code")
 
-    # ✅ 관리자만 접근 가능
-    if device_code != "D-ADMIN":
-        raise HTTPException(403, "Access denied: not admin device")
-
+    # ✅ 테넌트 확인
     tenant = s.scalars(select(Tenant).where(Tenant.code == tenant_code)).first()
     if not tenant:
         raise HTTPException(404, "tenant not found")
 
-    # ✅ 식권 가격
+    # ✅ 식권 단가
     price = s.query(TicketPrice).filter(TicketPrice.tenant_id == tenant.id).first()
     adult_price = price.adult_price if price else 0
     child_price = price.child_price if price else 0
 
-    # ✅ 모든 예식과 통계 join
+    # ✅ 테넌트 내의 모든 예식 + 통계 JOIN
     stats = (
         s.query(TicketStat, WeddingEvent)
         .join(WeddingEvent, WeddingEvent.id == TicketStat.event_id)
@@ -749,15 +767,15 @@ def get_admin_summary(s: Session = Depends(db), claims=Depends(require_auth)):
         .all()
     )
 
-    # ✅ 예식별 묶기 (device_code 무시)
+    # ✅ 묶임 기준: 홀 + 날짜 + 시간 + 신랑 + 신부
     summary = {}
     for st, ev in stats:
         key = (
-            (ev.hall_name or "").strip(),
+            (ev.hall_name or "").strip().lower(),
             ev.event_date,
             (ev.start_time or "").strip(),
-            (ev.groom_name or "").strip(),
-            (ev.bride_name or "").strip(),
+            (ev.groom_name or "").strip().lower(),
+            (ev.bride_name or "").strip().lower(),
         )
 
         if key not in summary:
@@ -774,10 +792,10 @@ def get_admin_summary(s: Session = Depends(db), claims=Depends(require_auth)):
                 "bride_child": 0,
                 "adult_price": adult_price,
                 "child_price": child_price,
-                "devices": set(),  # ✅ 어떤 부조석에서 왔는지도 추적 가능
+                "devices": set(),  # 어떤 부조석에서 왔는지도 추적 가능
             }
 
-        # ✅ 신랑/신부별 카운트 누적
+        # ✅ 신랑/신부별 합산
         if ev.owner_type == "groom":
             summary[key]["groom_adult"] += st.adult_count
             summary[key]["groom_child"] += st.child_count
@@ -787,7 +805,7 @@ def get_admin_summary(s: Session = Depends(db), claims=Depends(require_auth)):
 
         summary[key]["devices"].add(ev.device_code)
 
-    # ✅ 금액/합계 계산
+    # ✅ 금액 및 합계 계산
     result = []
     for v in summary.values():
         groom_total = (v["groom_adult"] * v["adult_price"]) + (v["groom_child"] * v["child_price"])
@@ -800,7 +818,7 @@ def get_admin_summary(s: Session = Depends(db), claims=Depends(require_auth)):
         v["bride_total"] = bride_total
         v["total_sum"] = groom_total + bride_total
 
-        # ✅ 디바이스 목록을 문자열로 변환 (관리자가 보면 “A1, A2” 식으로 표시)
+        # ✅ 디바이스 목록을 보기 좋게 표시
         v["devices"] = ", ".join(sorted(v["devices"]))
         result.append(v)
 
@@ -990,80 +1008,7 @@ def scan_ticket(data: dict, db: Session = Depends(db), claims=Depends(require_au
 
 
 
-    ##“그 예식 하나의 자세한 내역”
-@router.get("/event_summary/{event_id}")
-def get_event_summary(event_id: int, db: Session = Depends(db)):
-    # ✅ 기준 예식 하나 가져오기
-    event = db.query(WeddingEvent).filter(WeddingEvent.id == event_id).first()
-    if not event:
-        raise HTTPException(status_code=404, detail="Event not found")
 
-    # ✅ 같은 홀 + 예식시간 + 신랑/신부 이름이 동일한 모든 예식 그룹 조회
-    grouped_events = db.query(WeddingEvent).filter(
-        WeddingEvent.tenant_id == event.tenant_id,
-        WeddingEvent.hall_name == event.hall_name,
-        WeddingEvent.event_date == event.event_date,
-        WeddingEvent.start_time == event.start_time,
-        WeddingEvent.groom_name == event.groom_name,
-        WeddingEvent.bride_name == event.bride_name
-    ).all()
-    grouped_ids = [e.id for e in grouped_events]
-
-    # ✅ TicketStat에서 해당 예식들 전체 통계 조회
-    stats = db.query(TicketStat).filter(TicketStat.event_id.in_(grouped_ids)).all()
-
-    # ✅ 누적값 초기화
-    groom_data = {
-        "adult": 0, "child": 0,
-        "restaurant_adult": 0, "restaurant_child": 0,
-        "gift_adult": 0, "gift_child": 0,
-        "unused_adult": 0, "unused_child": 0,
-        "unused_total": 0, "grand_total": 0,
-    }
-    bride_data = {
-        "adult": 0, "child": 0,
-        "restaurant_adult": 0, "restaurant_child": 0,
-        "gift_adult": 0, "gift_child": 0,
-        "unused_adult": 0, "unused_child": 0,
-        "unused_total": 0, "grand_total": 0,
-    }
-
-    # ✅ Device 정보 기준으로 신랑/신부 구분
-    from models import Device
-    for stat in stats:
-        device = db.query(Device).filter(Device.device_code == stat.device_code).first()
-        if not device:
-            continue
-
-        side = device.side or "unknown"
-        target = groom_data if side == "groom" else bride_data if side == "bride" else None
-        if not target:
-            continue
-
-        target["adult"] += stat.adult_count
-        target["child"] += stat.child_count
-        target["restaurant_adult"] += stat.restaurant_adult
-        target["restaurant_child"] += stat.restaurant_child
-        target["gift_adult"] += stat.gift_adult
-        target["gift_child"] += stat.gift_child
-        target["unused_adult"] += stat.unused_adult
-        target["unused_child"] += stat.unused_child
-        target["unused_total"] += stat.unused_total
-        target["grand_total"] += stat.grand_total
-
-    totals = {
-        "grand_total": groom_data["grand_total"] + bride_data["grand_total"],
-    }
-
-    return {
-        "hall_name": event.hall_name,
-        "event_date": event.event_date,
-        "groom_name": event.groom_name,
-        "bride_name": event.bride_name,
-        "groom": groom_data,
-        "bride": bride_data,
-        "totals": totals,
-    }
 
 
 
