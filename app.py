@@ -55,7 +55,7 @@ def _maybe_seed():
 # 인증 의존성 (비번 변경 시 즉시 401)
 def require_auth(
     authorization: str = Header(None),
-    x_device_code: str | None = Header(None),   # ✅ 추가
+    x_device_code: str = Header(None),   # ✅ 클라이언트에서 전달되는 디바이스 코드 헤더
     s: Session = Depends(db)
 ):
     if not authorization or not authorization.lower().startswith("bearer "):
@@ -73,11 +73,12 @@ def require_auth(
     # ✅ 헤더에 X-Device-Code가 있으면 그것을 우선 사용
     device_code = x_device_code or payload.get("device_code", "unknown")
 
+    # ✅ 최신 디바이스 코드 반영하여 반환
     return {
         **payload,
         "tenant_code": tenant_code,
         "token_version": tv,
-        "device_code": device_code,  # ✅ 항상 최신 디바이스 코드 반영
+        "device_code": device_code,
     }
 
 # ─────────────────────────────────────────────
