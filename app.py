@@ -465,7 +465,7 @@ def delete_multiple_wedding_events(
 
 
 
-
+        ##화면에 최신 누적값을 보여주는 조회용 API
 @app.get("/wedding/ticket/event_summary/{event_id}")
 def get_event_summary(event_id: int, s: Session = Depends(db), claims=Depends(require_auth)):
     event = s.query(WeddingEvent).filter(WeddingEvent.id == event_id).first()
