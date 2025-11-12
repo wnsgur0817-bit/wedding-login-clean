@@ -374,35 +374,36 @@ def list_wedding_events(claims=Depends(require_auth), s: Session = Depends(db)):
     if not tenant:
         raise HTTPException(404, "tenant not found")
 
+    # 기본 쿼리
     q = s.query(WeddingEvent).filter(WeddingEvent.tenant_id == tenant.id)
 
-    # 부조석은 자기 디바이스 것만, 관리자면 전체
+    # ✅ 부조석은 자기 디바이스 데이터만
     if device_code and device_code != "D-ADMIN":
         q = q.filter(WeddingEvent.device_code == device_code)
 
     events = q.order_by(
         WeddingEvent.event_date.desc(),
-        WeddingEvent.start_time.asc()
+        WeddingEvent.start_time.asc(),
+        WeddingEvent.hall_name.asc()
     ).all()
 
-    # ✅ 관리자: owner_type 제외하고 묶기 / 부조석: 기존대로 유지
-    dedup = {}
-    for e in events:
-        hall = (e.hall_name or "").strip().lower()
-        time_ = (e.start_time or "").strip()
-        groom = (e.groom_name or "").strip().lower()
-        bride = (e.bride_name or "").strip().lower()
+    # ✅ 관리자면 "같은 홀/날짜/시간/신랑/신부 이름" 기준으로 묶기
+    # ✅ 부조석이면 묶지 않음 (항상 자기 데이터만)
+    if device_code == "D-ADMIN":
+        dedup = {}
+        for e in events:
+            key = (
+                (e.hall_name or "").strip(),
+                e.event_date,
+                (e.start_time or "").strip(),
+                (e.groom_name or "").strip(),
+                (e.bride_name or "").strip(),
+            )
+            if key not in dedup:
+                dedup[key] = e
+        events = list(dedup.values())
 
-        # ✅ 관리자만 묶기
-        if device_code == "D-ADMIN":
-            key = (hall, e.event_date, time_, groom, bride)
-        else:
-            key = (hall, e.event_date, time_, groom, bride, e.device_code)
-
-        if key not in dedup:
-            dedup[key] = e
-
-    return list(dedup.values())
+    return events
 
 
 
@@ -477,31 +478,61 @@ def delete_multiple_wedding_events(
         ##화면에 최신 누적값을 보여주는 조회용 API
 @app.get("/wedding/ticket/event_summary/{event_id}")
 def get_event_summary(event_id: int, s: Session = Depends(db), claims=Depends(require_auth)):
-    event = s.query(WeddingEvent).filter(WeddingEvent.id == event_id).first()
-    if not event:
+    tenant_code = claims["tenant_code"]
+    device_code = claims.get("device_code")
+
+    tenant = s.scalars(select(Tenant).where(Tenant.code == tenant_code)).first()
+    if not tenant:
+        raise HTTPException(status_code=404, detail="tenant not found")
+
+    # ✅ 기준 예식
+    base_event = s.query(WeddingEvent).filter(WeddingEvent.id == event_id).first()
+    if not base_event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    # ✅ join 을 추가해서 신랑/신부 데이터를 정확히 구분
+    # ✅ 관리자면 같은 예식끼리 전부 묶기
+    if device_code == "D-ADMIN":
+        related_events = (
+            s.query(WeddingEvent)
+            .filter(WeddingEvent.tenant_id == tenant.id)
+            .filter(WeddingEvent.hall_name == base_event.hall_name)
+            .filter(WeddingEvent.event_date == base_event.event_date)
+            .filter(WeddingEvent.start_time == base_event.start_time)
+            .filter(WeddingEvent.groom_name == base_event.groom_name)
+            .filter(WeddingEvent.bride_name == base_event.bride_name)
+            .all()
+        )
+        event_ids = [e.id for e in related_events]
+    else:
+        # ✅ 부조석은 자기 이벤트만
+        event_ids = [event_id]
+
+    # ✅ 신랑 / 신부 통계 분리
     groom_stats = (
         s.query(TicketStat)
         .join(WeddingEvent, WeddingEvent.id == TicketStat.event_id)
-        .filter(TicketStat.event_id == event_id)
+        .filter(TicketStat.event_id.in_(event_ids))
         .filter(WeddingEvent.owner_type == "groom")
         .all()
     )
+
     bride_stats = (
         s.query(TicketStat)
         .join(WeddingEvent, WeddingEvent.id == TicketStat.event_id)
-        .filter(TicketStat.event_id == event_id)
+        .filter(TicketStat.event_id.in_(event_ids))
         .filter(WeddingEvent.owner_type == "bride")
         .all()
     )
 
+    # ✅ 총합 계산
     return {
         "event": {
-            "title": event.title,
-            "hall_name": event.hall_name,
-            "date": event.event_date,
+            "title": base_event.title,
+            "hall_name": base_event.hall_name,
+            "date": base_event.event_date,
+            "time": base_event.start_time,
+            "groom_name": base_event.groom_name,
+            "bride_name": base_event.bride_name,
         },
         "groom": {
             "adult": sum(s_.adult_count for s_ in groom_stats),
@@ -511,6 +542,12 @@ def get_event_summary(event_id: int, s: Session = Depends(db), claims=Depends(re
             "adult": sum(s_.adult_count for s_ in bride_stats),
             "child": sum(s_.child_count for s_ in bride_stats),
         },
+        "related_device_count": len(set(
+            s.query(WeddingEvent.device_code)
+            .filter(WeddingEvent.id.in_(event_ids))
+            .distinct()
+            .all()
+        )),  # ✅ 관리자일 때 몇 개 디바이스에서 나온 데이터인지도 확인 가능
     }
 
 
@@ -691,6 +728,7 @@ def get_admin_summary(s: Session = Depends(db), claims=Depends(require_auth)):
     tenant_code = claims["tenant_code"]
     device_code = claims.get("device_code")
 
+    # ✅ 관리자만 접근 가능
     if device_code != "D-ADMIN":
         raise HTTPException(403, "Access denied: not admin device")
 
@@ -698,12 +736,12 @@ def get_admin_summary(s: Session = Depends(db), claims=Depends(require_auth)):
     if not tenant:
         raise HTTPException(404, "tenant not found")
 
-    # ✅ 항상 최신 가격 불러오기
+    # ✅ 식권 가격
     price = s.query(TicketPrice).filter(TicketPrice.tenant_id == tenant.id).first()
     adult_price = price.adult_price if price else 0
     child_price = price.child_price if price else 0
 
-    # ✅ TicketStat + WeddingEvent JOIN
+    # ✅ 모든 예식과 통계 join
     stats = (
         s.query(TicketStat, WeddingEvent)
         .join(WeddingEvent, WeddingEvent.id == TicketStat.event_id)
@@ -711,11 +749,16 @@ def get_admin_summary(s: Session = Depends(db), claims=Depends(require_auth)):
         .all()
     )
 
-    # ✅ 예식별 합산 구조 (신랑/신부 통합)
+    # ✅ 예식별 묶기 (device_code 무시)
     summary = {}
     for st, ev in stats:
-        # 🔑 홀, 날짜, 시간, 신랑/신부 이름이 모두 같을 때만 묶임
-        key = (ev.hall_name, ev.event_date, ev.start_time, ev.groom_name, ev.bride_name)
+        key = (
+            (ev.hall_name or "").strip(),
+            ev.event_date,
+            (ev.start_time or "").strip(),
+            (ev.groom_name or "").strip(),
+            (ev.bride_name or "").strip(),
+        )
 
         if key not in summary:
             summary[key] = {
@@ -725,13 +768,16 @@ def get_admin_summary(s: Session = Depends(db), claims=Depends(require_auth)):
                 "time": ev.start_time,
                 "groom_name": ev.groom_name,
                 "bride_name": ev.bride_name,
-                "groom_adult": 0, "groom_child": 0,
-                "bride_adult": 0, "bride_child": 0,
+                "groom_adult": 0,
+                "groom_child": 0,
+                "bride_adult": 0,
+                "bride_child": 0,
                 "adult_price": adult_price,
                 "child_price": child_price,
+                "devices": set(),  # ✅ 어떤 부조석에서 왔는지도 추적 가능
             }
 
-        # ✅ 신랑/신부별로 각각 누적
+        # ✅ 신랑/신부별 카운트 누적
         if ev.owner_type == "groom":
             summary[key]["groom_adult"] += st.adult_count
             summary[key]["groom_child"] += st.child_count
@@ -739,7 +785,9 @@ def get_admin_summary(s: Session = Depends(db), claims=Depends(require_auth)):
             summary[key]["bride_adult"] += st.adult_count
             summary[key]["bride_child"] += st.child_count
 
-    # ✅ 금액 계산 포함
+        summary[key]["devices"].add(ev.device_code)
+
+    # ✅ 금액/합계 계산
     result = []
     for v in summary.values():
         groom_total = (v["groom_adult"] * v["adult_price"]) + (v["groom_child"] * v["child_price"])
@@ -752,9 +800,12 @@ def get_admin_summary(s: Session = Depends(db), claims=Depends(require_auth)):
         v["bride_total"] = bride_total
         v["total_sum"] = groom_total + bride_total
 
+        # ✅ 디바이스 목록을 문자열로 변환 (관리자가 보면 “A1, A2” 식으로 표시)
+        v["devices"] = ", ".join(sorted(v["devices"]))
         result.append(v)
 
     return result
+
 
 
 
