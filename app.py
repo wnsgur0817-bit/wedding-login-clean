@@ -395,6 +395,12 @@ def list_wedding_events(claims=Depends(require_auth), s: Session = Depends(db)):
     return list(dedup.values())
         # 이미 있으면 그냥 건너뜀 (중복 제거)
 
+
+
+
+
+
+
         ###관라자 페이지 선택삭제
 @app.post("/wedding/event/bulk_delete")
 def delete_multiple_wedding_events(
@@ -457,6 +463,46 @@ def delete_multiple_wedding_events(
         s.rollback()
         raise HTTPException(status_code=500, detail=f"Delete failed: {str(e)}")
 
+
+
+
+@app.get("/wedding/ticket/event_summary/{event_id}")
+def get_event_summary(event_id: int, s: Session = Depends(db), claims=Depends(require_auth)):
+    event = s.query(WeddingEvent).filter(WeddingEvent.id == event_id).first()
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+
+    # ✅ join 을 추가해서 신랑/신부 데이터를 정확히 구분
+    groom_stats = (
+        s.query(TicketStat)
+        .join(WeddingEvent, WeddingEvent.id == TicketStat.event_id)
+        .filter(TicketStat.event_id == event_id)
+        .filter(WeddingEvent.owner_type == "groom")
+        .all()
+    )
+    bride_stats = (
+        s.query(TicketStat)
+        .join(WeddingEvent, WeddingEvent.id == TicketStat.event_id)
+        .filter(TicketStat.event_id == event_id)
+        .filter(WeddingEvent.owner_type == "bride")
+        .all()
+    )
+
+    return {
+        "event": {
+            "title": event.title,
+            "hall_name": event.hall_name,
+            "date": event.event_date,
+        },
+        "groom": {
+            "adult": sum(s_.adult_count for s_ in groom_stats),
+            "child": sum(s_.child_count for s_ in groom_stats),
+        },
+        "bride": {
+            "adult": sum(s_.adult_count for s_ in bride_stats),
+            "child": sum(s_.child_count for s_ in bride_stats),
+        },
+    }
 
 
 
