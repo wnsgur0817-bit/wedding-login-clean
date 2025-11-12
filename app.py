@@ -385,7 +385,20 @@ def list_wedding_events(claims=Depends(require_auth), s: Session = Depends(db)):
         WeddingEvent.start_time.asc(),
         WeddingEvent.hall_name.asc()
     ).all()
-
+    # ✅ 관리자는 중복된 예식(홀/날짜/시간/이름 동일) 묶기
+    if device_code == "D-ADMIN":
+        dedup = {}
+        for e in events:
+            key = (
+                (e.hall_name or "").strip(),
+                e.event_date,
+                (e.start_time or "").strip(),
+                (e.groom_name or "").strip(),
+                (e.bride_name or "").strip(),
+            )
+            if key not in dedup:
+                dedup[key] = e
+        events = list(dedup.values())
     # ✅ 부조석: 그대로 / 관리자: 묶지 않음(여기선 안 함)
     return events
 
