@@ -385,21 +385,25 @@ def list_wedding_events(claims=Depends(require_auth), s: Session = Depends(db)):
         WeddingEvent.start_time.asc(),
         WeddingEvent.hall_name.asc()
     ).all()
-    # ✅ 관리자는 중복된 예식(홀/날짜/시간/이름 동일) 묶기
+
+    # ✅ 관리자: 같은 (홀/날짜/시간/신랑/신부) 조합은 1개로 묶기
     if device_code == "D-ADMIN":
         dedup = {}
         for e in events:
-            key = (
-                (e.hall_name or "").strip(),
-                e.event_date,
-                (e.start_time or "").strip(),
-                (e.groom_name or "").strip(),
-                (e.bride_name or "").strip(),
-            )
+            hall = (e.hall_name or "").strip().lower()
+            date_str = str(e.event_date)  # ← 중요: 날짜를 문자열로 고정
+            time_str = (e.start_time or "").strip()
+            # HH:MM 포맷 보정 (이미 그렇게 들어온다면 그대로 사용)
+            if len(time_str) == 4 and time_str[1] == ":":
+                time_str = "0" + time_str  # 예: '9:30' -> '09:30'
+            groom = (e.groom_name or "").strip().lower()
+            bride = (e.bride_name or "").strip().lower()
+
+            key = (hall, date_str, time_str, groom, bride)
             if key not in dedup:
                 dedup[key] = e
         events = list(dedup.values())
-    # ✅ 부조석: 그대로 / 관리자: 묶지 않음(여기선 안 함)
+
     return events
 
 
@@ -636,11 +640,9 @@ def issue_ticket(data: dict, s: Session = Depends(db), claims=Depends(require_au
         else:
             raise HTTPException(400, f"Unknown ticket type: {ttype}")
 
-        s.commit()
-        s.refresh(stat)
-
-        # ✅ 예식 통계 자동 업데이트
+        s.flush()   # ← 변경사항을 DB에 즉시 반영 (commit 전이라 rollback 가능)
         update_stats_for_event(s, event_id)
+        s.commit()  # ← 마지막에 한 번만 확정 저장
 
         return {
             "ok": True,
@@ -685,9 +687,10 @@ def update_stats_for_event(s: Session, event_id: int):
         .join(Device, Device.device_code == TicketStat.device_code)
         .join(WeddingEvent, WeddingEvent.id == TicketStat.event_id)
         .filter(TicketStat.tenant_id == tenant.id)
+        .filter(WeddingEvent.device_code == event.device_code)
         .filter(WeddingEvent.hall_name == event.hall_name)
         .filter(WeddingEvent.event_date == event.event_date)
-        .filter(WeddingEvent.start_time == event.start_time)  # ✅ 핵심 추가
+        .filter(WeddingEvent.start_time == event.start_time)
         .filter(WeddingEvent.groom_name == event.groom_name)
         .filter(WeddingEvent.bride_name == event.bride_name)
         .all()
@@ -747,7 +750,7 @@ def update_stats_for_event(s: Session, event_id: int):
     event.bride_total_price = bride_price
 
     s.add(event)
-    s.commit()
+    #s.commit()
 
 
 
