@@ -1,12 +1,11 @@
 ﻿# app.py#
 import os, re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from fastapi import FastAPI, HTTPException, Depends, Header,APIRouter, Body
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import create_engine, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
-
 from models import Base, Tenant, User, Device, DeviceClaim,WeddingEvent, TicketStat, TicketPrice
 from schemas import (
     LoginReq, LoginResp, ChangePwReq,
@@ -14,10 +13,8 @@ from schemas import (
 )
 from auth import verify_pw, make_access_token, hash_pw, verify_access_token
 from manage_generate import seed_if_empty
-
 import traceback
 
-#
 # ─────────────────────────────────────────────
 # DB
 DATABASE_URL = os.getenv(
@@ -27,6 +24,9 @@ DATABASE_URL = os.getenv(
 engine = create_engine(DATABASE_URL, future=True)
 Base.metadata.create_all(engine)
 router = APIRouter(prefix="/wedding/ticket", tags=["wedding-ticket"])
+KST = timezone(timedelta(hours=9))
+today_kst = datetime.now(KST).date()
+
 def db():
     with Session(engine) as s:
         yield s
@@ -324,7 +324,7 @@ def create_wedding_event(
         device_code=device_code,      # ✅ 부조석/관리자 구분용
         owner_type=data.owner_type,   # ✅ 신랑/신부 구분
         hall_name=data.hall_name.strip(),
-        event_date=data.event_date,   # ✅ date 타입 그대로
+        event_date=datetime.now(KST).date(),   # ✅ date 타입 그대로
         start_time=data.start_time,
         title=data.title,
         groom_name=data.groom_name,
@@ -387,14 +387,14 @@ def list_wedding_events(claims=Depends(require_auth), s: Session = Depends(db)):
     ).all()
 
     # ✅ 디바이스 종류와 상관없이, 동일한 예식(홀+날짜+시간+신랑/신부 이름)은 1개로 묶기
-    merged = {}
+    dedup = {}
     for e in events:
-        key = (e.hall_name, e.event_date, e.start_time, e.groom_name, e.bride_name)
-        if key not in merged:
-            merged[key] = e
+        key = (e.hall_name, e.event_date, e.start_time, e.groom_name, e.bride_name, e.owner_type)
+        if key not in dedup:
+            dedup[key] = e
+    return list(dedup.values())
         # 이미 있으면 그냥 건너뜀 (중복 제거)
 
-    return list(merged.values())
 
 @app.post("/wedding/event/bulk_delete")
 def delete_multiple_wedding_events(

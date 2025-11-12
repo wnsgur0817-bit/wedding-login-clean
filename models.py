@@ -78,6 +78,20 @@ class WeddingEvent(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
 
+    # ✅ 신랑/신부 각각 별도 저장 가능하도록 제약 추가
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "hall_name",
+            "event_date",
+            "start_time",
+            "groom_name",
+            "bride_name",
+            "owner_type",   # 핵심
+            name="uq_event_per_owner",
+        ),
+    )
+
 class TicketStat(Base):
     __tablename__ = "ticket_stats"
     id = Column(Integer, primary_key=True)
