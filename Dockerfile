@@ -12,7 +12,5 @@ COPY . .
 # Cloud Run은 기본적으로 8080 포트를 사용
 EXPOSE 8080
 
-RUN rm -f /app/app.db && cp app.db /app/app.db
-
 # FastAPI 실행 (app.py 파일 안의 app 객체를 실행)
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8080"]
