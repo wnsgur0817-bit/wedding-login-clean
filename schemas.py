@@ -35,7 +35,6 @@ class ReleaseReq(BaseModel):
     session_id: str
 
 class WeddingEventIn(BaseModel):
-    event_date: date
     start_time: str
     groom_name: str
     bride_name: str

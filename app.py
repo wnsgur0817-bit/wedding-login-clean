@@ -407,7 +407,85 @@ def list_wedding_events(claims=Depends(require_auth), s: Session = Depends(db)):
     return events
 
 
+    ##관리자 페이지 통계 “예식별 한 줄 요약 리스트”
+@app.get("/wedding/ticket/admin_summary")
+def get_admin_summary(s: Session = Depends(db), claims=Depends(require_auth)):
+    tenant_code = claims["tenant_code"]
 
+    # ✅ 테넌트 확인
+    tenant = s.scalars(select(Tenant).where(Tenant.code == tenant_code)).first()
+    if not tenant:
+        raise HTTPException(404, "tenant not found")
+
+    # ✅ 식권 단가
+    price = s.query(TicketPrice).filter(TicketPrice.tenant_id == tenant.id).first()
+    adult_price = price.adult_price if price else 0
+    child_price = price.child_price if price else 0
+
+    # ✅ 테넌트 내의 모든 예식 + 통계 JOIN
+    stats = (
+        s.query(TicketStat, WeddingEvent)
+        .join(WeddingEvent, WeddingEvent.id == TicketStat.event_id)
+        .filter(TicketStat.tenant_id == tenant.id)
+        .all()
+    )
+
+    # ✅ 묶임 기준: 홀 + 날짜 + 시간 + 신랑 + 신부
+    summary = {}
+    for st, ev in stats:
+        key = (
+            (ev.hall_name or "").strip().lower(),
+            ev.event_date,
+            (ev.start_time or "").strip(),
+            (ev.groom_name or "").strip().lower(),
+            (ev.bride_name or "").strip().lower(),
+        )
+
+        if key not in summary:
+            summary[key] = {
+                "hall": ev.hall_name,
+                "title": ev.title,
+                "date": ev.event_date,
+                "time": ev.start_time,
+                "groom_name": ev.groom_name,
+                "bride_name": ev.bride_name,
+                "groom_adult": 0,
+                "groom_child": 0,
+                "bride_adult": 0,
+                "bride_child": 0,
+                "adult_price": adult_price,
+                "child_price": child_price,
+                "devices": set(),  # 어떤 부조석에서 왔는지도 추적 가능
+            }
+
+        # ✅ 신랑/신부별 합산
+        if ev.owner_type == "groom":
+            summary[key]["groom_adult"] += st.adult_count
+            summary[key]["groom_child"] += st.child_count
+        elif ev.owner_type == "bride":
+            summary[key]["bride_adult"] += st.adult_count
+            summary[key]["bride_child"] += st.child_count
+
+        summary[key]["devices"].add(ev.device_code)
+
+    # ✅ 금액 및 합계 계산
+    result = []
+    for v in summary.values():
+        groom_total = (v["groom_adult"] * v["adult_price"]) + (v["groom_child"] * v["child_price"])
+        bride_total = (v["bride_adult"] * v["adult_price"]) + (v["bride_child"] * v["child_price"])
+
+        v["total_adult"] = v["groom_adult"] + v["bride_adult"]
+        v["total_child"] = v["groom_child"] + v["bride_child"]
+        v["total_tickets"] = v["total_adult"] + v["total_child"]
+        v["groom_total"] = groom_total
+        v["bride_total"] = bride_total
+        v["total_sum"] = groom_total + bride_total
+
+        # ✅ 디바이스 목록을 보기 좋게 표시
+        v["devices"] = ", ".join(sorted(v["devices"]))
+        result.append(v)
+
+    return result
 
 
 
@@ -760,85 +838,7 @@ def update_stats_for_event(s: Session, event_id: int):
 
 
 
-    ##관리자 페이지 통계 “예식별 한 줄 요약 리스트”
-@app.get("/wedding/ticket/admin_summary")
-def get_admin_summary(s: Session = Depends(db), claims=Depends(require_auth)):
-    tenant_code = claims["tenant_code"]
 
-    # ✅ 테넌트 확인
-    tenant = s.scalars(select(Tenant).where(Tenant.code == tenant_code)).first()
-    if not tenant:
-        raise HTTPException(404, "tenant not found")
-
-    # ✅ 식권 단가
-    price = s.query(TicketPrice).filter(TicketPrice.tenant_id == tenant.id).first()
-    adult_price = price.adult_price if price else 0
-    child_price = price.child_price if price else 0
-
-    # ✅ 테넌트 내의 모든 예식 + 통계 JOIN
-    stats = (
-        s.query(TicketStat, WeddingEvent)
-        .join(WeddingEvent, WeddingEvent.id == TicketStat.event_id)
-        .filter(TicketStat.tenant_id == tenant.id)
-        .all()
-    )
-
-    # ✅ 묶임 기준: 홀 + 날짜 + 시간 + 신랑 + 신부
-    summary = {}
-    for st, ev in stats:
-        key = (
-            (ev.hall_name or "").strip().lower(),
-            ev.event_date,
-            (ev.start_time or "").strip(),
-            (ev.groom_name or "").strip().lower(),
-            (ev.bride_name or "").strip().lower(),
-        )
-
-        if key not in summary:
-            summary[key] = {
-                "hall": ev.hall_name,
-                "title": ev.title,
-                "date": ev.event_date,
-                "time": ev.start_time,
-                "groom_name": ev.groom_name,
-                "bride_name": ev.bride_name,
-                "groom_adult": 0,
-                "groom_child": 0,
-                "bride_adult": 0,
-                "bride_child": 0,
-                "adult_price": adult_price,
-                "child_price": child_price,
-                "devices": set(),  # 어떤 부조석에서 왔는지도 추적 가능
-            }
-
-        # ✅ 신랑/신부별 합산
-        if ev.owner_type == "groom":
-            summary[key]["groom_adult"] += st.adult_count
-            summary[key]["groom_child"] += st.child_count
-        elif ev.owner_type == "bride":
-            summary[key]["bride_adult"] += st.adult_count
-            summary[key]["bride_child"] += st.child_count
-
-        summary[key]["devices"].add(ev.device_code)
-
-    # ✅ 금액 및 합계 계산
-    result = []
-    for v in summary.values():
-        groom_total = (v["groom_adult"] * v["adult_price"]) + (v["groom_child"] * v["child_price"])
-        bride_total = (v["bride_adult"] * v["adult_price"]) + (v["bride_child"] * v["child_price"])
-
-        v["total_adult"] = v["groom_adult"] + v["bride_adult"]
-        v["total_child"] = v["groom_child"] + v["bride_child"]
-        v["total_tickets"] = v["total_adult"] + v["total_child"]
-        v["groom_total"] = groom_total
-        v["bride_total"] = bride_total
-        v["total_sum"] = groom_total + bride_total
-
-        # ✅ 디바이스 목록을 보기 좋게 표시
-        v["devices"] = ", ".join(sorted(v["devices"]))
-        result.append(v)
-
-    return result
 
 
 
