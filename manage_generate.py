@@ -6,9 +6,14 @@ from sqlalchemy.orm import Session
 from sqlalchemy import create_engine
 from models import Base, User, Tenant
 from auth import hash_pw
+import os
+from seed_data import seed_if_empty
 
+DB = os.getenv(
+    "DATABASE_URL",
+    "postgresql+psycopg2://postgres:%25121q2w3e4R@/wedding_db?host=/cloudsql/groovy-plating-477407-p3:asia-northeast3:wedding-db"
+)
 
-DB = "sqlite:///app.db"
 engine = create_engine(DB, future=True)
 
 ADMIN_LOGIN = "0"

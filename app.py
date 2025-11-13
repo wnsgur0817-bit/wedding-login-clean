@@ -15,7 +15,7 @@ from schemas import (
     DeviceAvailability, ClaimReq, ReleaseReq,WeddingEventIn, WeddingEventOut
 )
 from auth import verify_pw, make_access_token, hash_pw, verify_access_token
-from manage_generate import seed_if_empty
+from manage_generate import reset_db, seed_if_empty
 import traceback
 
 # ─────────────────────────────────────────────
@@ -33,6 +33,11 @@ today_kst = datetime.now(KST).date()
 def db():
     with Session(engine) as s:
         yield s
+
+@app.on_event("startup")
+def init_data():
+    reset_db(engine)        # ⭐ Cloud SQL 초기화
+    seed_if_empty(engine)   # ⭐ Seed 초기 데이터 생성
 
 # ─────────────────────────────────────────────
 # APP
