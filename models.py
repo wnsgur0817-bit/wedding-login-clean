@@ -1,126 +1,136 @@
-﻿#models.py
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship,declarative_base
-from sqlalchemy import String, Integer, ForeignKey, UniqueConstraint, DateTime, func,Column,Date
-from datetime import datetime, date, time
+﻿# models.py
 
-Base = declarative_base()
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy import String, Integer, ForeignKey, DateTime, func, Date
 
-class Base(DeclarativeBase): pass
 
+class Base(DeclarativeBase):
+    pass
+
+
+# ======================================
+# 관리자 전용 테넌트 (T-0000) + 일반 테넌트
+# ======================================
 class Tenant(Base):
     __tablename__ = "tenants"
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    code: Mapped[str] = mapped_column(String(16), unique=True, index=True)  # 예: T-0001
-    name: Mapped[str] = mapped_column(String(100))
-    # ───── NEW: 테넌트 단위 비밀번호 & 세션 버전 ─────
-    pw_hash: Mapped[str] = mapped_column(String(255), default="")  # NEW
-    pw_updated_at: Mapped[DateTime] = mapped_column(              # NEW
-        DateTime, server_default=func.now(), onupdate=func.now()
-    )
-    token_version: Mapped[int] = mapped_column(Integer, default=1) # NEW
 
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    code: Mapped[str] = mapped_column(String(16), unique=True, index=True)  # T-0000, T-0001 ...
+    name: Mapped[str] = mapped_column(String(100))
+
+
+# ======================================
+# 승인 대기 사용자
+# ======================================
+class RequestedUser(Base):
+    __tablename__ = "requested_users"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    login_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    pw_hash: Mapped[str] = mapped_column(String(255))
+    created_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now())
+
+
+# ======================================
+# 승인된 사용자 (직원)
+# ======================================
 class User(Base):
     __tablename__ = "users"
-    id: Mapped[int] = mapped_column(primary_key=True)
-    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"))
-    login_id: Mapped[str] = mapped_column(String(64), index=True)   # 예: weddinghall1
-    pw_hash: Mapped[str] = mapped_column(String(255))               # (과거 호환용: 더이상 검증에 안 씀)
-    role: Mapped[str] = mapped_column(String(16), default="staff")  # staff only
-    __table_args__ = (UniqueConstraint("tenant_id","login_id", name="uq_user_tenant_login"),)
 
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"))
+    login_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    pw_hash: Mapped[str] = mapped_column(String(255))
+    role: Mapped[str] = mapped_column(String(16), default="staff")  # admin/staff
+
+
+# ======================================
+# 디바이스 (D-A01, D-A02 ...)
+# ======================================
 class Device(Base):
     __tablename__ = "devices"
-    id: Mapped[int] = mapped_column(primary_key=True)
-    tenant_id: Mapped[int] = mapped_column(
-        ForeignKey("tenants.id", ondelete="CASCADE"), index=True
-    )
-    device_code: Mapped[str] = mapped_column(String(32), index=True)      # D-A1 등
-    activation_code: Mapped[str] = mapped_column(String(64), unique=True) # 출고시 제공
-    active: Mapped[int] = mapped_column(Integer, default=0)               # 0/1
 
-    # ✅ 오늘 배치된 신랑/신부 구분용
-    side: Mapped[str | None] = mapped_column(String(16), nullable=True)   # "groom" or "bride"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"))
+    device_code: Mapped[str] = mapped_column(String(16), index=True)  # D-A01 ...
+    activation_code: Mapped[str] = mapped_column(String(64))
+    active: Mapped[int] = mapped_column(Integer, default=0)
 
-    last_seen_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now())
-    __table_args__ = (UniqueConstraint("tenant_id", "device_code", name="uq_device_per_tenant"),)
+    __table_args__ = ({"sqlite_autoincrement": True},)
 
 
-class DeviceClaim(Base):
-    __tablename__ = "device_claims"
-    id = Column(Integer, primary_key=True)
-    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False)
-    device_code = Column(String, nullable=False)
-    session_id = Column(String, nullable=False)   # 클라이언트가 만든 세션 ID(아무 문자열)
-    claimed_at = Column(DateTime, nullable=False, server_default=func.now())
-    expires_at = Column(DateTime, nullable=True)  # 하트비트/만료(선택)
-
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "device_code", name="uq_tenant_device_claim"),
-    )
-
+# ======================================
+# 예식 정보
+# ======================================
 class WeddingEvent(Base):
     __tablename__ = "wedding_events"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
-    device_code: Mapped[str] = mapped_column(String(32), index=True)
-    owner_type: Mapped[str] = mapped_column(String(16), default="groom", nullable=False)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"))
+    device_code: Mapped[str] = mapped_column(String(16))
 
-    hall_name: Mapped[str] = mapped_column(String(20), nullable=False)  # ✅ 추가
+    owner_type: Mapped[str] = mapped_column(String(16), default="groom")
+    hall_name: Mapped[str] = mapped_column(String(20))
 
-    event_date: Mapped[date] = mapped_column(Date)
+    event_date: Mapped[Date] = mapped_column(Date)
     start_time: Mapped[str] = mapped_column(String(8))
+
     title: Mapped[str] = mapped_column(String(100))
     groom_name: Mapped[str] = mapped_column(String(50))
     bride_name: Mapped[str] = mapped_column(String(50))
+
     child_min_age: Mapped[int] = mapped_column(Integer, default=0)
     child_max_age: Mapped[int] = mapped_column(Integer, default=0)
-    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    created_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    # ======================================
+    # 🔥 누적 통계 저장용 필드 추가
+    # ======================================
     groom_adult_total: Mapped[int] = mapped_column(Integer, default=0)
     groom_child_total: Mapped[int] = mapped_column(Integer, default=0)
     bride_adult_total: Mapped[int] = mapped_column(Integer, default=0)
     bride_child_total: Mapped[int] = mapped_column(Integer, default=0)
+
     groom_total_price: Mapped[int] = mapped_column(Integer, default=0)
     bride_total_price: Mapped[int] = mapped_column(Integer, default=0)
 
-    # ✅ 신랑/신부 각각 별도 저장 가능하도록 제약 추가
-    __table_args__ = (
-        UniqueConstraint(
-            "tenant_id",
-            "device_code",
-            "hall_name",
-            "event_date",
-            "start_time",
-            "groom_name",
-            "bride_name",
-            "owner_type",   # 핵심
-            name="uq_event_per_owner",
-        ),
-    )
-
+# ======================================
+# 발급 통계
+# ======================================
 class TicketStat(Base):
     __tablename__ = "ticket_stats"
-    id = Column(Integer, primary_key=True)
-    tenant_id = Column(Integer, ForeignKey("tenants.id"))
-    event_id = Column(Integer, ForeignKey("wedding_events.id"))
-    device_code = Column(String, nullable=False, index=True)  # ✅ 추가
-    event_title = Column(String, nullable=False)
-    hall_name = Column(String, nullable=True)
-    adult_count = Column(Integer, default=0, nullable=False)
-    restaurant_adult = Column(Integer, default=0, nullable=False)
-    restaurant_child = Column(Integer, default=0, nullable=False)
-    gift_adult = Column(Integer, default=0, nullable=False)
-    gift_child = Column(Integer, default=0, nullable=False)
-    unused_adult = Column(Integer, default=0, nullable=False)
-    unused_child = Column(Integer, default=0, nullable=False)
-    unused_total = Column(Integer, default=0, nullable=False)
-    grand_total = Column(Integer, default=0, nullable=False)
 
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
+    event_id: Mapped[int] = mapped_column(ForeignKey("wedding_events.id"))
+    device_code: Mapped[str] = mapped_column(String(16))
+
+    event_title: Mapped[str] = mapped_column(String(100))
+    hall_name: Mapped[str] = mapped_column(String(50))
+
+    adult_count: Mapped[int] = mapped_column(Integer, default=0)
+    child_count: Mapped[int] = mapped_column(Integer, default=0)
+
+    restaurant_adult: Mapped[int] = mapped_column(Integer, default=0)
+    restaurant_child: Mapped[int] = mapped_column(Integer, default=0)
+    gift_adult: Mapped[int] = mapped_column(Integer, default=0)
+    gift_child: Mapped[int] = mapped_column(Integer, default=0)
+
+    unused_adult: Mapped[int] = mapped_column(Integer, default=0)
+    unused_child: Mapped[int] = mapped_column(Integer, default=0)
+    unused_total: Mapped[int] = mapped_column(Integer, default=0)
+    grand_total: Mapped[int] = mapped_column(Integer, default=0)
+
+
+# ======================================
+# 단가 테이블
+# ======================================
 class TicketPrice(Base):
     __tablename__ = "ticket_prices"
+
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
     adult_price: Mapped[int] = mapped_column(Integer, default=0)
     child_price: Mapped[int] = mapped_column(Integer, default=0)
-

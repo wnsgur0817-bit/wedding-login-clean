@@ -1,11 +1,14 @@
 ﻿# app.py#
 import os, re
 from datetime import datetime, timedelta, timezone
+
 from fastapi import FastAPI, HTTPException, Depends, Header,APIRouter, Body
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import create_engine, select
+
+from sqlalchemy import create_engine, select, func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+
 from models import Base, Tenant, User, Device, DeviceClaim,WeddingEvent, TicketStat, TicketPrice
 from schemas import (
     LoginReq, LoginResp, ChangePwReq,
@@ -45,17 +48,14 @@ app.add_middleware(
 def root():
     return {"message": "Wedding backend running ✅"}
 
-@app.on_event("startup")
-def _maybe_seed():
-    if os.getenv("AUTO_SEED", "false").lower() == "true":
-        seeded = seed_if_empty(engine)
-        print(f"[AUTO_SEED] seeded={seeded}")
 
-# ─────────────────────────────────────────────
-# 인증 의존성 (비번 변경 시 즉시 401)
+
+# ===========================================================
+# 인증 공통 처리
+# ===========================================================
 def require_auth(
     authorization: str = Header(None),
-    x_device_code: str = Header(None),   # ✅ 클라이언트에서 전달되는 디바이스 코드 헤더
+    x_device_code: str = Header(None),
     s: Session = Depends(db)
 ):
     if not authorization or not authorization.lower().startswith("bearer "):
@@ -64,72 +64,54 @@ def require_auth(
     token = authorization.split(" ", 1)[1]
     payload = verify_access_token(token, s)
 
-    tenant_code = payload.get("tenant_id")
-    tv = payload.get("tv")
+    device_code = x_device_code or payload.get("device_code", "D-ADMIN")
 
-    if not tenant_code or tv is None:
-        raise HTTPException(401, "invalid claims")
-
-    # ✅ 헤더에 X-Device-Code가 있으면 그것을 우선 사용
-    device_code = x_device_code or payload.get("device_code", "unknown")
-
-    # ✅ 최신 디바이스 코드 반영하여 반환
     return {
         **payload,
-        "tenant_code": tenant_code,
-        "token_version": tv,
         "device_code": device_code,
     }
 
-# ─────────────────────────────────────────────
-# 로그인/계정
+# ===========================================================
+# 로그인
+# ===========================================================
 def resolve_tenant_user_by_login_id(s: Session, login_id: str):
-    rows = s.execute(
-        select(User, Tenant)
-        .join(Tenant, Tenant.id == User.tenant_id)
-        .where(User.login_id == login_id)
-    ).all()
+    # 1) 정확한 login_id 검색
+    rows = (
+        s.execute(
+            select(User, Tenant)
+            .join(Tenant, Tenant.id == User.tenant_id)
+            .where(User.login_id == login_id)
+        )
+        .all()
+    )
 
     if len(rows) == 1:
         user, tenant = rows[0]
         return tenant, user
-    if len(rows) > 1:
-        raise HTTPException(409, "ambiguous login_id across tenants")
 
-    m = re.fullmatch(r"gen(\d{3})", login_id)
-    if m:
-        num = int(m.group(1))
-        code = f"T-{num:04d}"
-        tenant = s.scalars(select(Tenant).where(Tenant.code == code)).first()
-        if tenant:
-            user = s.scalars(
-                select(User).where(User.tenant_id == tenant.id, User.login_id == login_id)
-            ).first()
-            if user:
-                return tenant, user
+    if len(rows) > 1:
+        raise HTTPException(409, "duplicate login id across tenants")
+
     raise HTTPException(401, "invalid credentials")
+
 
 @app.post("/auth/login", response_model=LoginResp)
 def login(body: LoginReq, s: Session = Depends(db)):
     try:
         tenant, user = resolve_tenant_user_by_login_id(s, body.login_id)
 
-        if not tenant.pw_hash:
-            raise HTTPException(500, "tenant password not initialized")
+        # tenant 비밀번호 비교
         if not verify_pw(body.password, tenant.pw_hash):
-            raise HTTPException(401, "invalid credentials")
+            raise HTTPException(401, "invalid password")
 
-        tv = tenant.token_version or 1
-
-        # ✅ device_code를 클라이언트에서 받은 값으로 사용
-        device_code = getattr(body, "device_code", "D-ADMIN")
+        tv = tenant.token_version if hasattr(tenant, "token_version") else 1
 
         token = make_access_token(
             sub=str(user.id),
             tenant_code=tenant.code,
             role=user.role,
             token_version=tv,
-            device_code=device_code,  # ✅ 수정됨
+            device_code="D-ADMIN",  # 로그인 시 기본값
         )
 
         return {
@@ -137,7 +119,7 @@ def login(body: LoginReq, s: Session = Depends(db)):
             "claims": {
                 "tenant_id": tenant.code,
                 "role": user.role,
-                "device_code": device_code,  # ✅ 추가하면 Flutter에서 디버깅 편함
+                "device_code": "D-ADMIN",
             },
         }
 
@@ -146,60 +128,96 @@ def login(body: LoginReq, s: Session = Depends(db)):
     except Exception as e:
         raise HTTPException(500, f"login failed: {e}")
 
-@app.post("/auth/change_password")
-def change_password(body: ChangePwReq, s: Session = Depends(db)):
-    try:
-        tenant, _user = resolve_tenant_user_by_login_id(s, body.login_id)
 
-        if not tenant.pw_hash:
-            raise HTTPException(500, "tenant password not initialized")
-        if not verify_pw(body.current_password, tenant.pw_hash):
-            raise HTTPException(401, "invalid")
+# ===========================================================
+# 회원가입 요청 (사용자)
+# ===========================================================
+@app.post("/auth/register")
+def register_user(body: RegisterReq, s: Session = Depends(db)):
+    exists = s.scalars(
+        select(RequestedUser).where(RequestedUser.login_id == body.login_id)
+    ).first()
 
-        tenant.pw_hash = hash_pw(body.new_password)
-        tenant.token_version = (tenant.token_version or 1) + 1  # 모든 토큰 즉시 무효
-        s.commit()
-        return {"ok": True}
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(500, f"change_password failed: {e}")
+    if exists:
+        raise HTTPException(409, "ID already requested")
 
-@app.post("/auth/verify_password")
-def verify_password(data: dict, s: Session = Depends(db), claims=Depends(require_auth)):
-    tenant_code = claims["tenant_code"]
-    password = data.get("password")
-    if not password:
-        raise HTTPException(400, "password required")
-
-    tenant = s.scalars(select(Tenant).where(Tenant.code == tenant_code)).first()
-    if not tenant:
-        raise HTTPException(404, "tenant not found")
-
-    # ✅ 비밀번호 검증
-    if not verify_pw(password, tenant.pw_hash):
-        return {"valid": False}
-    return {"valid": True}
-
-
-
-@app.get("/auth/me")
-def me(claims=Depends(require_auth)):
-    return {"ok": True, "claims": claims}
-
-# ─────────────────────────────────────────────
-# Device Claim(점유) + TTL/Heartbeat
-def _gc_expired_claims(s: Session):
-    s.query(DeviceClaim).filter(
-        DeviceClaim.expires_at.isnot(None),
-        DeviceClaim.expires_at < datetime.utcnow()
-    ).delete(synchronize_session=False)
+    user = RequestedUser(
+        login_id=body.login_id,
+        pw_hash=hash_pw(body.password),
+    )
+    s.add(user)
     s.commit()
 
+    return {"ok": True, "message": "registration pending"}
+
+
+# ===========================================================
+# 관리자 승인 (T-0000)
+# ===========================================================
+@app.post("/auth/approve")
+def approve_user(body: ApproveReq, s: Session = Depends(db), claims=Depends(require_auth)):
+    if claims["tenant_id"] != "T-0000" or claims["role"] != "admin":
+        raise HTTPException(403, "not admin")
+
+    req_user = s.get(RequestedUser, body.request_id)
+    if not req_user:
+        raise HTTPException(404, "request not found")
+
+    # 다음 테넌트 코드 생성
+    last_tenant = s.scalars(
+        select(Tenant).where(Tenant.code != "T-0000").order_by(Tenant.id.desc())
+    ).first()
+
+    if last_tenant:
+        last_num = int(last_tenant.code.split("-")[1])
+    else:
+        last_num = 0
+
+    new_code = f"T-{last_num + 1:04d}"
+
+    tenant = Tenant(
+        code=new_code,
+        name=f"WeddingHall {new_code}",
+        pw_hash=req_user.pw_hash,
+    )
+    s.add(tenant)
+    s.flush()
+
+    # 사용자 생성
+    new_user = User(
+        tenant_id=tenant.id,
+        login_id=req_user.login_id,
+        pw_hash=req_user.pw_hash,
+        role="staff",
+    )
+    s.add(new_user)
+
+    # 기본 디바이스 생성
+    first_device = Device(
+        tenant_id=tenant.id,
+        device_code="D-A01",
+        activation_code=os.urandom(16).hex(),
+        active=0,
+    )
+    s.add(first_device)
+
+    # 승인 요청 제거
+    req_user.status = "approved"
+    s.commit()
+
+    return {
+        "ok": True,
+        "tenant": new_code,
+        "login_id": new_user.login_id,
+        "device_code": "D-A01",
+    }
+
+
+# ===========================================================
+# 디바이스 리스트(디바이스 선택 화면)
+# ===========================================================
 @app.get("/devices", response_model=list[DeviceAvailability])
 def list_devices(tenant_id: str, s: Session = Depends(db)):
-    _gc_expired_claims(s)
-
     tenant = s.scalars(select(Tenant).where(Tenant.code == tenant_id)).first()
     if not tenant:
         raise HTTPException(404, "tenant not found")
@@ -208,47 +226,77 @@ def list_devices(tenant_id: str, s: Session = Depends(db)):
         select(Device).where(Device.tenant_id == tenant.id)
     ).all()
 
-    claims = s.scalars(
-        select(DeviceClaim.device_code).where(DeviceClaim.tenant_id == tenant.id)
-    ).all()
-    claimed_set = set(claims)
+    return [
+        {"code": d.device_code, "available": True}
+        for d in devices
+    ]
 
-    codes = [d.device_code for d in devices]
-    if 'D-ADMIN' not in codes:
-        codes.insert(0, 'D-ADMIN')
 
-    return [{"code": c, "available": (c not in claimed_set)} for c in codes]
+# ===========================================================
+# 디바이스 생성 (관리자 or 테넌트 직원)
+# ===========================================================
+@app.post("/device/create", response_model=DeviceCreateResp)
+def create_device(s: Session = Depends(db), claims=Depends(require_auth)):
+    tenant_code = claims["tenant_id"]
 
-@app.post("/devices/claim")
-def claim_device(body: ClaimReq, s: Session = Depends(db)):
-    _gc_expired_claims(s)
-
-    tenant = s.scalars(select(Tenant).where(Tenant.code == body.tenant_id)).first()
+    tenant = s.scalars(select(Tenant).where(Tenant.code == tenant_code)).first()
     if not tenant:
         raise HTTPException(404, "tenant not found")
 
-    if body.device_code != "D-ADMIN":
-        exists = s.scalars(
-            select(Device).where(
-                Device.tenant_id == tenant.id,
-                Device.device_code == body.device_code
-            )
-        ).first()
-        if not exists:
-            raise HTTPException(404, "device not found")
+    # 현재 테넌트 디바이스 중 가장 큰 번호 찾기
+    last = (
+        s.scalars(
+            select(Device)
+            .where(Device.tenant_id == tenant.id)
+            .order_by(Device.id.desc())
+        )
+        .first()
+    )
 
-    # TTL(분) 환경변수, 기본 0=만료없음. 운영에선 2~5분 권장
-    ttl_minutes = int(os.getenv("DEVICE_CLAIM_TTL_MINUTES", "0"))
-    expires_at = None
-    if ttl_minutes > 0:
-        expires_at = datetime.utcnow() + timedelta(minutes=ttl_minutes)
+    if not last:
+        new_code = "D-A01"
+    else:
+        m = re.match(r"D-A(\d{2})", last.device_code)
+        if not m:
+            new_code = "D-A01"
+        else:
+            num = int(m.group(1))
+            new_code = f"D-A{num + 1:02d}"
+
+    act = os.urandom(16).hex()
+
+    device = Device(
+        tenant_id=tenant.id,
+        device_code=new_code,
+        activation_code=act,
+        active=0,
+    )
+    s.add(device)
+    s.commit()
+
+    return DeviceCreateResp(
+        device_code=new_code,
+        activation_code=act
+    )
+
+
+# ===========================================================
+# 디바이스 점유/해제/하트비트
+# ===========================================================
+@app.post("/devices/claim")
+def claim_device(body: ClaimReq, s: Session = Depends(db)):
+    tenant = s.scalars(
+        select(Tenant).where(Tenant.code == body.tenant_id)
+    ).first()
+    if not tenant:
+        raise HTTPException(404, "tenant not found")
 
     claim = DeviceClaim(
         tenant_id=tenant.id,
         device_code=body.device_code,
         session_id=body.session_id,
-        expires_at=expires_at,
     )
+
     try:
         s.add(claim)
         s.commit()
@@ -257,55 +305,35 @@ def claim_device(body: ClaimReq, s: Session = Depends(db)):
         s.rollback()
         raise HTTPException(409, "device already in use")
 
+
 @app.post("/devices/release")
 def release_device(body: ReleaseReq, s: Session = Depends(db)):
-    tenant = s.scalars(select(Tenant).where(Tenant.code == body.tenant_id)).first()
-    if not tenant:
-        raise HTTPException(404, "tenant not found")
+    tenant = s.scalars(
+        select(Tenant).where(Tenant.code == body.tenant_id)
+    ).first()
 
     deleted = s.query(DeviceClaim).filter(
         DeviceClaim.tenant_id == tenant.id,
         DeviceClaim.device_code == body.device_code,
         DeviceClaim.session_id == body.session_id,
     ).delete(synchronize_session=False)
+
     s.commit()
     return {"ok": bool(deleted)}
 
-# ✅ 여기에 추가
-@app.get("/devices/list")
-def list_devices_by_tenant(tenant: str, s: Session = Depends(db)):
-    tenant_obj = s.scalars(select(Tenant).where(Tenant.code == tenant)).first()
-    if not tenant_obj:
-        raise HTTPException(404, "tenant not found")
-    devices = s.scalars(select(Device).where(Device.tenant_id == tenant_obj.id)).all()
-    return [
-        {"id": d.id, "tenant_code": tenant, "code": d.device_code,
-         "active": bool(d.active), "activation_code": d.activation_code}
-        for d in devices
-    ]
 
 @app.post("/devices/heartbeat")
 def heartbeat(body: ClaimReq, s: Session = Depends(db)):
-    """주기적으로 호출하여 expires_at 연장 (앱에서 30~60초 간격 권장)"""
-    ttl_minutes = int(os.getenv("DEVICE_CLAIM_TTL_MINUTES", "0"))
-    if ttl_minutes <= 0:
-        return {"ok": True}  # TTL 사용 안 하면 noop
+    return {"ok": True}
 
-    tenant = s.scalars(select(Tenant).where(Tenant.code == body.tenant_id)).first()
-    if not tenant:
-        raise HTTPException(404, "tenant not found")
 
-    claim = s.query(DeviceClaim).filter(
-        DeviceClaim.tenant_id == tenant.id,
-        DeviceClaim.device_code == body.device_code,
-        DeviceClaim.session_id == body.session_id,
-    ).first()
-    if not claim:
-        raise HTTPException(404, "claim not found")
 
-    claim.expires_at = datetime.utcnow() + timedelta(minutes=ttl_minutes)
-    s.commit()
-    return {"ok": True, "expires_at": claim.expires_at.isoformat()}
+
+
+
+
+
+
 
 
 @app.post("/wedding/event", response_model=WeddingEventOut)
@@ -338,31 +366,7 @@ def create_wedding_event(data: WeddingEventIn, claims=Depends(require_auth), s: 
     return event
 
 
-@app.post("/devices/assign_side")
-def assign_device_side(data: dict, s: Session = Depends(db), claims=Depends(require_auth)):
-    tenant_code = claims["tenant_code"]
-    device_code = data.get("device_code")
-    side = data.get("side")  # "groom" or "bride"
 
-    if not device_code or side not in ["groom", "bride"]:
-        raise HTTPException(400, "device_code and side are required")
-
-    tenant = s.scalars(select(Tenant).where(Tenant.code == tenant_code)).first()
-    if not tenant:
-        raise HTTPException(404, "tenant not found")
-
-    device = (
-        s.query(Device)
-        .filter(Device.tenant_id == tenant.id)
-        .filter(Device.device_code == device_code)
-        .first()
-    )
-    if not device:
-        raise HTTPException(404, "device not found")
-
-    device.side = side
-    s.commit()
-    return {"ok": True, "device_code": device_code, "side": side}
 
 
 @app.get("/wedding/event/list", response_model=list[WeddingEventOut])
@@ -374,9 +378,10 @@ def list_wedding_events(claims=Depends(require_auth), s: Session = Depends(db)):
     if not tenant:
         raise HTTPException(404, "tenant not found")
 
+    # 기본: 같은 테넌트의 모든 event 조회
     q = s.query(WeddingEvent).filter(WeddingEvent.tenant_id == tenant.id)
 
-    # ✅ 부조석이면 자기 디바이스만, 관리자는 전체
+    # ✔ 부조석이면 자기 디바이스의 데이터만
     if device_code and device_code != "D-ADMIN":
         q = q.filter(WeddingEvent.device_code == device_code)
 
@@ -386,25 +391,103 @@ def list_wedding_events(claims=Depends(require_auth), s: Session = Depends(db)):
         WeddingEvent.hall_name.asc()
     ).all()
 
-    # ✅ 관리자: 같은 (홀/날짜/시간/신랑/신부) 조합은 1개로 묶기
+    # ✔ 관리자 전용: 중복 예식 묶기(5개 기준)
     if device_code == "D-ADMIN":
         dedup = {}
-        for e in events:
-            hall = (e.hall_name or "").strip().lower()
-            date_str = str(e.event_date)  # ← 중요: 날짜를 문자열로 고정
-            time_str = (e.start_time or "").strip()
-            # HH:MM 포맷 보정 (이미 그렇게 들어온다면 그대로 사용)
-            if len(time_str) == 4 and time_str[1] == ":":
-                time_str = "0" + time_str  # 예: '9:30' -> '09:30'
-            groom = (e.groom_name or "").strip().lower()
-            bride = (e.bride_name or "").strip().lower()
 
-            key = (hall, date_str, time_str, groom, bride)
+        for e in events:
+            # 정규화(공백 제거, 소문자 통일)
+            key = (
+                (e.hall_name or "").strip().lower(),
+                str(e.event_date),                # YYYY-MM-DD 로 고정
+                (e.start_time or "").strip(),     # 시간 문자열
+                (e.groom_name or "").strip().lower(),
+                (e.bride_name or "").strip().lower(),
+            )
+
+            # 09:30 포맷 보정
+            time_str = key[2]
+            if len(time_str) == 4 and time_str[1] == ":":
+                time_str = "0" + time_str
+            # 보정된 값으로 key 재생성
+            key = (
+                key[0], key[1], time_str, key[3], key[4]
+            )
+
+            # 첫 번째 것만 저장
             if key not in dedup:
                 dedup[key] = e
+
+        # dedup 결과를 events 로 교체
         events = list(dedup.values())
 
     return events
+
+
+        ###관라자 페이지 선택삭제
+@app.post("/wedding/event/bulk_delete")
+def delete_multiple_wedding_events(
+    body: dict = Body(...),
+    claims=Depends(require_auth),
+    s: Session = Depends(db)
+):
+    try:
+        event_ids = body.get("event_ids", [])
+        if not isinstance(event_ids, list):
+            raise HTTPException(400, "Invalid request body")
+
+        tenant_code = claims["tenant_code"]
+        tenant = s.scalars(select(Tenant).where(Tenant.code == tenant_code)).first()
+        if not tenant:
+            raise HTTPException(404, "tenant not found")
+
+        deleted_count = 0
+        for eid in event_ids:
+            event = (
+                s.query(WeddingEvent)
+                .filter(WeddingEvent.tenant_id == tenant.id, WeddingEvent.id == eid)
+                .first()
+            )
+            if not event:
+                continue
+
+            s.query(TicketStat).filter(TicketStat.event_id == eid).delete()
+            s.delete(event)
+            deleted_count += 1
+
+        s.commit()
+
+        # ✅ 최신 데이터 포함 응답
+        remaining = (
+            s.query(WeddingEvent)
+            .filter(WeddingEvent.tenant_id == tenant.id)
+            .order_by(WeddingEvent.event_date.desc())
+            .all()
+        )
+
+        return {
+            "ok": True,
+            "deleted_count": deleted_count,
+            "events": [
+                {
+                    "id": e.id,
+                    "hall_name": e.hall_name,
+                    "event_date": e.event_date,
+                    "start_time": e.start_time,
+                    "title": e.title,
+                    "groom_name": e.groom_name,
+                    "bride_name": e.bride_name,
+                }
+                for e in remaining
+            ],
+        }
+
+    except Exception as e:
+        s.rollback()
+        raise HTTPException(status_code=500, detail=f"Delete failed: {str(e)}")
+
+
+
 
 
     ##관리자 페이지 통계 “예식별 한 줄 요약 리스트”
@@ -490,67 +573,6 @@ def get_admin_summary(s: Session = Depends(db), claims=Depends(require_auth)):
 
 
 
-        ###관라자 페이지 선택삭제
-@app.post("/wedding/event/bulk_delete")
-def delete_multiple_wedding_events(
-    body: dict = Body(...),
-    claims=Depends(require_auth),
-    s: Session = Depends(db)
-):
-    try:
-        event_ids = body.get("event_ids", [])
-        if not isinstance(event_ids, list):
-            raise HTTPException(400, "Invalid request body")
-
-        tenant_code = claims["tenant_code"]
-        tenant = s.scalars(select(Tenant).where(Tenant.code == tenant_code)).first()
-        if not tenant:
-            raise HTTPException(404, "tenant not found")
-
-        deleted_count = 0
-        for eid in event_ids:
-            event = (
-                s.query(WeddingEvent)
-                .filter(WeddingEvent.tenant_id == tenant.id, WeddingEvent.id == eid)
-                .first()
-            )
-            if not event:
-                continue
-
-            s.query(TicketStat).filter(TicketStat.event_id == eid).delete()
-            s.delete(event)
-            deleted_count += 1
-
-        s.commit()
-
-        # ✅ 최신 데이터 포함 응답
-        remaining = (
-            s.query(WeddingEvent)
-            .filter(WeddingEvent.tenant_id == tenant.id)
-            .order_by(WeddingEvent.event_date.desc())
-            .all()
-        )
-
-        return {
-            "ok": True,
-            "deleted_count": deleted_count,
-            "events": [
-                {
-                    "id": e.id,
-                    "hall_name": e.hall_name,
-                    "event_date": e.event_date,
-                    "start_time": e.start_time,
-                    "title": e.title,
-                    "groom_name": e.groom_name,
-                    "bride_name": e.bride_name,
-                }
-                for e in remaining
-            ],
-        }
-
-    except Exception as e:
-        s.rollback()
-        raise HTTPException(status_code=500, detail=f"Delete failed: {str(e)}")
 
 
 
@@ -765,7 +787,6 @@ def update_stats_for_event(s: Session, event_id: int):
         .join(Device, Device.device_code == TicketStat.device_code)
         .join(WeddingEvent, WeddingEvent.id == TicketStat.event_id)
         .filter(TicketStat.tenant_id == tenant.id)
-        .filter(WeddingEvent.device_code == event.device_code)
         .filter(WeddingEvent.hall_name == event.hall_name)
         .filter(WeddingEvent.event_date == event.event_date)
         .filter(WeddingEvent.start_time == event.start_time)
@@ -831,84 +852,6 @@ def update_stats_for_event(s: Session, event_id: int):
     #s.commit()
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-    ##숫자 합계용 API
-@app.get("/wedding/ticket/stats")
-def get_ticket_stats(s: Session = Depends(db), claims=Depends(require_auth)):
-    tenant_code = claims["tenant_code"]
-    device_code = claims.get("device_code")  # ✅ 추가
-
-    tenant = s.scalars(select(Tenant).where(Tenant.code == tenant_code)).first()
-    if not tenant:
-        raise HTTPException(404, "tenant not found")
-
-    # ✅ D-ADMIN(관리자)인 경우 전체 합계 반환
-    if device_code == "D-ADMIN":
-        stats = s.query(TicketStat).filter(TicketStat.tenant_id == tenant.id).all()
-        if not stats:
-            return {"adult_count": 0, "child_count": 0, "adult_total": 0, "child_total": 0, "total_sum": 0}
-
-        # 가격 불러오기
-        price = s.query(TicketPrice).filter(TicketPrice.tenant_id == tenant.id).first()
-        adult_price = price.adult_price if price else 0
-        child_price = price.child_price if price else 0
-
-        # ✅ 전체 디바이스 합산
-        adult_sum = sum(s.adult_count for s in stats)
-        child_sum = sum(s.child_count for s in stats)
-        adult_total = adult_sum * adult_price
-        child_total = child_sum * child_price
-        total_sum = adult_total + child_total
-
-        return {
-            "adult_count": adult_sum,
-            "child_count": child_sum,
-            "adult_total": adult_total,
-            "child_total": child_total,
-            "total_sum": total_sum
-        }
-
-    # ✅ 일반 디바이스는 자기 데이터만
-    stat = (
-        s.query(TicketStat)
-        .filter(TicketStat.tenant_id == tenant.id)
-        .filter(TicketStat.device_code == device_code)  # ✅ 디바이스별 분리
-        .order_by(TicketStat.id.desc())
-        .first()
-    )
-    if not stat:
-        return {
-            "adult_count": 0,
-            "child_count": 0,
-            "adult_total": 0,
-            "child_total": 0,
-            "total_sum": 0
-        }
-
-    price = s.query(TicketPrice).filter(TicketPrice.tenant_id == tenant.id).first()
-    adult_total = stat.adult_count * (price.adult_price if price else 0)
-    child_total = stat.child_count * (price.child_price if price else 0)
-    total_sum = adult_total + child_total
-
-    return {
-        "adult_count": stat.adult_count,
-        "child_count": stat.child_count,
-        "adult_total": adult_total,
-        "child_total": child_total,
-        "total_sum": total_sum
-    }
 
 
 # ✅ 식권 가격 설정/조회 ---------------------------------------------------------
