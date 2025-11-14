@@ -196,18 +196,25 @@ def login(body: LoginReq, s: Session = Depends(db)):
 # 회원가입 요청 (사용자)
 # ===========================================================
 @app.post("/auth/register")
-def register_user(body: RegisterReq, s: Session = Depends(db)):
+def register_user(body: dict, s: Session = Depends(db)):
+    login_id = body.get("login_id")
+    password = body.get("password")
+
+    if not login_id or not password:
+        raise HTTPException(400, "login_id and password required")
+
     exists = s.scalars(
-        select(RequestedUser).where(RequestedUser.login_id == body.login_id)
+        select(RequestedUser).where(RequestedUser.login_id == login_id)
     ).first()
 
     if exists:
         raise HTTPException(409, "ID already requested")
 
     user = RequestedUser(
-        login_id=body.login_id,
-        pw_hash=hash_pw(body.password),
+        login_id=login_id,
+        pw_hash=hash_pw(password),
     )
+
     s.add(user)
     s.commit()
 
