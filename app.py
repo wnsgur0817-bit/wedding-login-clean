@@ -15,15 +15,14 @@ from schemas import (
     DeviceAvailability, ClaimReq, ReleaseReq,WeddingEventIn, WeddingEventOut
 )
 from auth import verify_pw, make_access_token, hash_pw, verify_access_token
-from manage_generate import reset_db, seed_if_empty
 import traceback
 
 # ─────────────────────────────────────────────
 # DB
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql+psycopg2://postgres:%25121q2w3e4R@/wedding_db?host=/cloudsql/groovy-plating-477407-p3:asia-northeast3:wedding-db"
-)
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./app.db")
+#DATABASE_URL = os.getenv(
+#    "DATABASE_URL",
+#    "postgresql+psycopg2://postgres:%25121q2w3e4R@/wedding_db?host=/cloudsql/groovy-plating-477407-p3:asia-northeast3:wedding-db")
 engine = create_engine(DATABASE_URL, future=True)
 Base.metadata.create_all(engine)
 router = APIRouter(prefix="/wedding/ticket", tags=["wedding-ticket"])
@@ -34,10 +33,6 @@ def db():
     with Session(engine) as s:
         yield s
 
-@app.on_event("startup")
-def init_data():
-    reset_db(engine)        # ⭐ Cloud SQL 초기화
-    seed_if_empty(engine)   # ⭐ Seed 초기 데이터 생성
 
 # ─────────────────────────────────────────────
 # APP
@@ -983,6 +978,6 @@ app.include_router(router)
 
 if __name__ == "__main__":
     import uvicorn
-    from manage_generate import seed_if_empty
-    seed_if_empty(engine)  # ✅ 초기 데이터 삽입
+  #  from manage_generate import seed_if_empty
+   # seed_if_empty(engine)  # ✅ 초기 데이터 삽입
     uvicorn.run("app:app", host="0.0.0.0", port=8080)
