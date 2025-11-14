@@ -17,7 +17,8 @@ class Tenant(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     code: Mapped[str] = mapped_column(String(16), unique=True, index=True)
     name: Mapped[str] = mapped_column(String(100))
-    pw_hash: Mapped[str] = mapped_column(String(255))  # ⭐ 반드시 필요!!
+    pw_hash: Mapped[str] = mapped_column(String(255))
+    token_version: Mapped[int] = mapped_column(Integer, default=1)  # ⭐ 추가
 
 
 # ======================================

@@ -4,7 +4,7 @@
 
 from sqlalchemy.orm import Session
 from sqlalchemy import create_engine
-from models import Base, User, Tenant
+from models import Base, User, Tenant, Device
 from auth import hash_pw
 import os
 from seed_data import seed_if_empty
