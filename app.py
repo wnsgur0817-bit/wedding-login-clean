@@ -9,7 +9,7 @@ from sqlalchemy import create_engine, select, func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from models import Base, Tenant, User, Device, DeviceClaim,WeddingEvent, TicketStat, TicketPrice
+from models import Base, Tenant, User, Device, DeviceClaim,WeddingEvent, TicketStat, TicketPrice,RequestedUser
 from schemas import (
     LoginReq, LoginResp, ChangePwReq,
     DeviceAvailability, ClaimReq, ReleaseReq,WeddingEventIn, WeddingEventOut
@@ -94,6 +94,69 @@ def resolve_tenant_user_by_login_id(s: Session, login_id: str):
 
     raise HTTPException(401, "invalid credentials")
 
+@app.post("/auth/approve_user")
+def approve_user(data: dict, s: Session = Depends(db), claims=Depends(require_auth)):
+    # 최고관리자 권한 검사
+    if claims["tenant_id"] != "T-0000" or claims["role"] != "admin":
+        raise HTTPException(403, "not admin")
+
+    login_id = data.get("login_id")
+    if not login_id:
+        raise HTTPException(400, "login_id required")
+
+    # 대기 사용자 조회
+    req_user = (
+        s.query(RequestedUser)
+        .filter(RequestedUser.login_id == login_id)
+        .first()
+    )
+    if not req_user:
+        raise HTTPException(404, "request not found")
+
+    # 다음 테넌트 코드 생성
+    last = (
+        s.query(Tenant)
+        .filter(Tenant.code != "T-0000")
+        .order_by(Tenant.id.desc())
+        .first()
+    )
+
+    last_num = int(last.code.split("-")[1]) if last else 0
+    new_code = f"T-{last_num + 1:04d}"
+
+    # 새 테넌트 생성
+    tenant = Tenant(
+        code=new_code,
+        name=f"WeddingHall {new_code}",
+        pw_hash=req_user.pw_hash,
+    )
+    s.add(tenant)
+    s.flush()
+
+    # staff 사용자 생성
+    user = User(
+        tenant_id=tenant.id,
+        login_id=req_user.login_id,
+        pw_hash=req_user.pw_hash,
+        role="staff"
+    )
+    s.add(user)
+
+    # ⭐ D-ADMIN만 자동 생성
+    admin_device = Device(
+        tenant_id=tenant.id,
+        device_code="D-ADMIN",
+        activation_code=os.urandom(16).hex(),
+        active=0,
+    )
+    s.add(admin_device)
+
+    # 대기목록에서 삭제
+    s.delete(req_user)
+
+    s.commit()
+
+    return {"ok": True, "tenant_code": new_code, "login_id": login_id}
 
 @app.post("/auth/login", response_model=LoginResp)
 def login(body: LoginReq, s: Session = Depends(db)):
@@ -151,134 +214,68 @@ def register_user(body: RegisterReq, s: Session = Depends(db)):
     return {"ok": True, "message": "registration pending"}
 
 
-# ===========================================================
-# 관리자 승인 (T-0000)
-# ===========================================================
-@app.post("/auth/approve")
-def approve_user(body: ApproveReq, s: Session = Depends(db), claims=Depends(require_auth)):
-    if claims["tenant_id"] != "T-0000" or claims["role"] != "admin":
-        raise HTTPException(403, "not admin")
 
-    req_user = s.get(RequestedUser, body.request_id)
-    if not req_user:
-        raise HTTPException(404, "request not found")
-
-    # 다음 테넌트 코드 생성
-    last_tenant = s.scalars(
-        select(Tenant).where(Tenant.code != "T-0000").order_by(Tenant.id.desc())
-    ).first()
-
-    if last_tenant:
-        last_num = int(last_tenant.code.split("-")[1])
-    else:
-        last_num = 0
-
-    new_code = f"T-{last_num + 1:04d}"
-
-    tenant = Tenant(
-        code=new_code,
-        name=f"WeddingHall {new_code}",
-        pw_hash=req_user.pw_hash,
-    )
-    s.add(tenant)
-    s.flush()
-
-    # 사용자 생성
-    new_user = User(
-        tenant_id=tenant.id,
-        login_id=req_user.login_id,
-        pw_hash=req_user.pw_hash,
-        role="staff",
-    )
-    s.add(new_user)
-
-    # 기본 디바이스 생성
-    first_device = Device(
-        tenant_id=tenant.id,
-        device_code="D-A01",
-        activation_code=os.urandom(16).hex(),
-        active=0,
-    )
-    s.add(first_device)
-
-    # 승인 요청 제거
-    req_user.status = "approved"
-    s.commit()
-
-    return {
-        "ok": True,
-        "tenant": new_code,
-        "login_id": new_user.login_id,
-        "device_code": "D-A01",
-    }
 
 
 # ===========================================================
 # 디바이스 리스트(디바이스 선택 화면)
 # ===========================================================
-@app.get("/devices", response_model=list[DeviceAvailability])
-def list_devices(tenant_id: str, s: Session = Depends(db)):
-    tenant = s.scalars(select(Tenant).where(Tenant.code == tenant_id)).first()
-    if not tenant:
+@app.get("/devices/list")
+def list_devices_for_flutter(tenant: str, claims=Depends(require_auth), s: Session = Depends(db)):
+    if claims["tenant_id"] != tenant:
+        raise HTTPException(403, "not allowed")
+
+    tenant_obj = s.scalars(select(Tenant).where(Tenant.code == tenant)).first()
+    if not tenant_obj:
         raise HTTPException(404, "tenant not found")
 
     devices = s.scalars(
-        select(Device).where(Device.tenant_id == tenant.id)
+        select(Device).where(Device.tenant_id == tenant_obj.id)
     ).all()
 
-    return [
-        {"code": d.device_code, "available": True}
-        for d in devices
-    ]
+    return [{"code": d.device_code} for d in devices]
 
 
 # ===========================================================
 # 디바이스 생성 (관리자 or 테넌트 직원)
 # ===========================================================
-@app.post("/device/create", response_model=DeviceCreateResp)
-def create_device(s: Session = Depends(db), claims=Depends(require_auth)):
-    tenant_code = claims["tenant_id"]
+@app.post("/devices/create_next")
+def create_next_device(data: dict, claims=Depends(require_auth), s: Session = Depends(db)):
+    tenant_code = data.get("tenant_code")
+    if claims["tenant_id"] != tenant_code:
+        raise HTTPException(403, "not allowed")
 
     tenant = s.scalars(select(Tenant).where(Tenant.code == tenant_code)).first()
     if not tenant:
         raise HTTPException(404, "tenant not found")
 
-    # 현재 테넌트 디바이스 중 가장 큰 번호 찾기
-    last = (
-        s.scalars(
-            select(Device)
-            .where(Device.tenant_id == tenant.id)
-            .order_by(Device.id.desc())
-        )
-        .first()
+    existing = (
+        s.query(Device)
+        .filter(Device.tenant_id == tenant.id)
+        .filter(Device.device_code.like("D-A%"))
+        .all()
     )
 
-    if not last:
-        new_code = "D-A01"
-    else:
-        m = re.match(r"D-A(\d{2})", last.device_code)
-        if not m:
-            new_code = "D-A01"
-        else:
-            num = int(m.group(1))
-            new_code = f"D-A{num + 1:02d}"
+    nums = []
+    for dev in existing:
+        try:
+            nums.append(int(dev.device_code[4:]))
+        except:
+            pass
 
-    act = os.urandom(16).hex()
+    next_num = max(nums, default=0) + 1
+    new_code = f"D-A{next_num:02d}"
 
-    device = Device(
+    new_dev = Device(
         tenant_id=tenant.id,
         device_code=new_code,
-        activation_code=act,
+        activation_code=os.urandom(16).hex(),
         active=0,
     )
-    s.add(device)
+    s.add(new_dev)
     s.commit()
 
-    return DeviceCreateResp(
-        device_code=new_code,
-        activation_code=act
-    )
-
+    return {"ok": True, "device_code": new_code}
 
 # ===========================================================
 # 디바이스 점유/해제/하트비트
