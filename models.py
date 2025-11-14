@@ -134,3 +134,17 @@ class TicketPrice(Base):
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
     adult_price: Mapped[int] = mapped_column(Integer, default=0)
     child_price: Mapped[int] = mapped_column(Integer, default=0)
+
+
+# ======================================
+# 디바이스 점유(Claim) 테이블
+# ======================================
+class DeviceClaim(Base):
+    __tablename__ = "device_claims"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"))
+    device_code: Mapped[str] = mapped_column(String(16))
+    session_id: Mapped[str] = mapped_column(String(255))
+
+    created_at: Mapped[DateTime] = mapped_column(DateTime, server_default=func.now())
