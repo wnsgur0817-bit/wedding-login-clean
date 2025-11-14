@@ -11,7 +11,7 @@ import os
 #DB = os.getenv(
 #    "DATABASE_URL",
 #    "postgresql+psycopg2://postgres:%25121q2w3e4R@/wedding_db?host=/cloudsql/groovy-plating-477407-p3:asia-northeast3:wedding-db")
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:////tmp/app.db")
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///app.db")
 engine = create_engine(DATABASE_URL, future=True)
 
 ADMIN_LOGIN = "0"
