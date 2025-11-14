@@ -220,7 +220,23 @@ def register_user(body: dict, s: Session = Depends(db)):
 
     return {"ok": True, "message": "registration pending"}
 
+@app.get("/auth/pending_users")
+def list_pending_users(s: Session = Depends(db), claims=Depends(require_auth)):
 
+    if claims["tenant_id"] != "T-0000" or claims["role"] != "admin":
+        raise HTTPException(403, "not admin")
+
+    rows = s.scalars(
+        select(RequestedUser).where(RequestedUser.status == "pending")
+    ).all()
+
+    return [
+        {
+            "login_id": r.login_id,
+            "created_at": r.created_at.isoformat() if hasattr(r, "created_at") else ""
+        }
+        for r in rows
+    ]
 
 
 
