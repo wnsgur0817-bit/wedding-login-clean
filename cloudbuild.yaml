@@ -1,26 +1,28 @@
 steps:
 
+  # Build with latest tag
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['build', '-t', 'gcr.io/$PROJECT_ID/wedding-backend:$COMMIT_SHA', '.']
+    args: ['build', '-t', 'gcr.io/$PROJECT_ID/wedding-backend:latest', '.']
 
-
+  # Push latest
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['push', 'gcr.io/$PROJECT_ID/wedding-backend:$COMMIT_SHA']
+    args: ['push', 'gcr.io/$PROJECT_ID/wedding-backend:latest']
 
-
+  # Deploy with latest
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     entrypoint: gcloud
     args:
       [
         'run', 'deploy', 'wedding-backend',
-        '--image', 'gcr.io/$PROJECT_ID/wedding-backend:$COMMIT_SHA',
+        '--image', 'gcr.io/$PROJECT_ID/wedding-backend:latest',
         '--region', 'asia-northeast3',
         '--platform', 'managed',
         '--allow-unauthenticated'
       ]
 
 images:
-  - 'gcr.io/$PROJECT_ID/wedding-backend:$COMMIT_SHA'
+  - 'gcr.io/$PROJECT_ID/wedding-backend:latest'
 
 options:
   logging: CLOUD_LOGGING_ONLY
+
