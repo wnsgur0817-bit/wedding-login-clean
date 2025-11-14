@@ -96,7 +96,7 @@ def resolve_tenant_user_by_login_id(s: Session, login_id: str):
 
 @app.post("/auth/approve_user")
 def approve_user(data: dict, s: Session = Depends(db), claims=Depends(require_auth)):
-    # 최고관리자 권한 검사
+    # 최고관리자만 가능
     if claims["tenant_id"] != "T-0000" or claims["role"] != "admin":
         raise HTTPException(403, "not admin")
 
@@ -121,10 +121,10 @@ def approve_user(data: dict, s: Session = Depends(db), claims=Depends(require_au
         .first()
     )
 
-    last_num = int(last.code.split("-")[1]) if last else 0
+    last_num = int(last.code.split("-")[1]) if last else 1 - 1
     new_code = f"T-{last_num + 1:04d}"
 
-    # 새 테넌트 생성
+    # 테넌트 생성
     tenant = Tenant(
         code=new_code,
         name=f"WeddingHall {new_code}",
@@ -133,7 +133,7 @@ def approve_user(data: dict, s: Session = Depends(db), claims=Depends(require_au
     s.add(tenant)
     s.flush()
 
-    # staff 사용자 생성
+    # 직원 user 생성
     user = User(
         tenant_id=tenant.id,
         login_id=req_user.login_id,
@@ -142,7 +142,7 @@ def approve_user(data: dict, s: Session = Depends(db), claims=Depends(require_au
     )
     s.add(user)
 
-    # ⭐ D-ADMIN만 자동 생성
+    # 예식장의 관리자 디바이스(D-ADMIN) 자동 생성
     admin_device = Device(
         tenant_id=tenant.id,
         device_code="D-ADMIN",
@@ -151,12 +151,10 @@ def approve_user(data: dict, s: Session = Depends(db), claims=Depends(require_au
     )
     s.add(admin_device)
 
-    # 대기목록에서 삭제
     s.delete(req_user)
-
     s.commit()
 
-    return {"ok": True, "tenant_code": new_code, "login_id": login_id}
+    return {"ok": True, "tenant_code": new_code}
 
 @app.post("/auth/login", response_model=LoginResp)
 def login(body: LoginReq, s: Session = Depends(db)):

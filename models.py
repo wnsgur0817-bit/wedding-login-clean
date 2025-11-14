@@ -15,8 +15,9 @@ class Tenant(Base):
     __tablename__ = "tenants"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    code: Mapped[str] = mapped_column(String(16), unique=True, index=True)  # T-0000, T-0001 ...
+    code: Mapped[str] = mapped_column(String(16), unique=True, index=True)
     name: Mapped[str] = mapped_column(String(100))
+    pw_hash: Mapped[str] = mapped_column(String(255))  # ⭐ 반드시 필요!!
 
 
 # ======================================

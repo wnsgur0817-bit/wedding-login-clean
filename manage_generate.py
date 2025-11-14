@@ -27,21 +27,33 @@ def reset_db():
 def seed():
     reset_db()
     with Session(engine) as s:
+        # 최고관리자 테넌트
         admin_tenant = Tenant(
             code="T-0000",
             name="MasterAdminTenant",
-            pw_hash=hash_pw(ADMIN_PASSWORD),
+            pw_hash=hash_pw("0"),
         )
         s.add(admin_tenant)
         s.flush()
 
+        # 최고관리자 user
         admin_user = User(
             tenant_id=admin_tenant.id,
-            login_id=ADMIN_LOGIN,
-            pw_hash=hash_pw(ADMIN_PASSWORD),
+            login_id="0",
+            pw_hash=hash_pw("0"),
             role="admin",
         )
         s.add(admin_user)
+
+        # 최고관리자 디바이스
+        admin_device = Device(
+            tenant_id=admin_tenant.id,
+            device_code="D-ADMIN",
+            activation_code=os.urandom(16).hex(),
+            active=0
+        )
+        s.add(admin_device)
+
         s.commit()
 
     print("✨ 관리자 계정 생성 완료")
